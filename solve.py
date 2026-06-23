@@ -19,6 +19,31 @@ weight 레이아웃 = challenge.py 오프셋과 일치:
 import argparse
 import torch
 import torch.nn.functional as F
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _silu_mul_kernel(gate_ptr, up_ptr, out_ptr, n, BLOCK: tl.constexpr):
+    """R3' fused: out = silu(gate) * up, 1패스. gate/up HBM 1회씩 읽고 out 1회 씀.
+    eager는 silu(50.5μs)+mul(75.7μs) 따로 = 중간텐서 왕복. 여기선 융합."""
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < n
+    g = tl.load(gate_ptr + offs, mask=mask).to(tl.float32)
+    u = tl.load(up_ptr + offs, mask=mask).to(tl.float32)
+    s = g * tl.sigmoid(g)          # silu(g) = g·σ(g)
+    tl.store(out_ptr + offs, (s * u).to(out_ptr.dtype.element_ty), mask=mask)
+
+
+def silu_mul_fused(gate, up):
+    """cuBLAS matmul로 만든 gate,up을 받아 elementwise만 Triton 융합."""
+    out = torch.empty_like(gate)
+    n = gate.numel()
+    grid = (triton.cdiv(n, 1024),)
+    _silu_mul_kernel[grid](gate, up, out, n, BLOCK=1024)
+    return out
+
 
 D = 512
 NQ, NKV, HD = 8, 2, 64
@@ -176,7 +201,33 @@ def solve_naive(x, output, weights, cos, sin, seq_len):
     output.copy_(x1 + act @ Wd.t())
 
 
-VARIANTS = {"flash4d": solve, "naive": solve_naive}
+def solve_fused_ffn(x, output, weights, cos, sin, seq_len):
+    """R3' — flash4d attention + Triton 융합 FFN (silu*up 1패스).
+    matmul=cuBLAS 유지, elementwise만 융합. torch.compile(R3 반증) 대체."""
+    T = seq_len
+
+    def W(off, r, c):
+        return weights[off:off + r * c].view(r, c)
+    w1 = weights[O_RMS1:O_WQ]; WQ = W(O_WQ, NQ*HD, D); WK = W(O_WK, NKV*HD, D)
+    WV = W(O_WV, NKV*HD, D); WO = W(O_WO, D, D); w2 = weights[O_RMS2:O_WG]
+    Wg = W(O_WG, FF, D); Wu = W(O_WU, FF, D); Wd = W(O_WD, D, FF)
+    h = _rmsnorm(x, w1)
+    q = _rope((h @ WQ.t()).view(T, NQ, HD), cos, sin)
+    k = _rope((h @ WK.t()).view(T, NKV, HD), cos, sin)
+    v = (h @ WV.t()).view(T, NKV, HD)
+    k = k.repeat_interleave(NQ // NKV, dim=1)
+    v = v.repeat_interleave(NQ // NKV, dim=1)
+    qh = q.transpose(0, 1).unsqueeze(0); kh = k.transpose(0, 1).unsqueeze(0)
+    vh = v.transpose(0, 1).unsqueeze(0)
+    ctx = F.scaled_dot_product_attention(qh, kh, vh, is_causal=True)
+    ctx = ctx.squeeze(0).transpose(0, 1).reshape(T, D)
+    x1 = x + ctx @ WO.t()
+    h2 = _rmsnorm(x1, w2)
+    act = silu_mul_fused(h2 @ Wg.t(), h2 @ Wu.t())   # ← Triton 융합 (cuBLAS matmul 유지)
+    output.copy_(x1 + act @ Wd.t())
+
+
+VARIANTS = {"flash4d": solve, "fused_ffn": solve_fused_ffn, "naive": solve_naive}
 
 
 def _time(fn, x, w, cos, sin, T, out, iters=50):
