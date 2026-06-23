@@ -1,8 +1,10 @@
-"""R1 champion — Llama decoder block, flash attention (PoC 01-hard-loop-poc).
+"""Baseline champion — Llama decoder block, naive attention.
 
-R0 naive (score (8,T,T) materialise, 3.495ms) → R1 flash (1.723ms, 2.03×).
-변형 = attention 6줄만 F.scaled_dot_product_attention(is_causal)로 교체.
-RMSNorm/RoPE/GQA/FFN 동일. PoC 챔피언 (R2/R2' 반증, R1 유지).
+ENV: A100-SXM4-40GB + torch 2.11.0+cu128 (CUDA 12.8). 이 스택 기준 새 베이스라인.
+과거 PoC(A100, 옛 torch)에선 flash 2.03× 챔피언이었으나 — 이 스택에서
+F.scaled_dot_product_attention flash 백엔드 = "No available kernel" (측정 반증).
+sdpa default(math fallback) 2.246ms > naive score 1.777ms. 따라서 현 챔피언 = naive.
+= 자동 루프가 잡을 발견의 실물: 정적 가정(flash 빠름)이 측정에 반증됨.
 
 단일소스 (.py, ipynb 폐기 — PoC §110). 글루 Generator의 시드 코드로도 쓰임.
 사용: python solve.py --check | --bench | --profile
@@ -78,8 +80,12 @@ def solve(x, output, weights, cos, sin, seq_len):
     kh = k.transpose(0, 1)
     vh = v.transpose(0, 1)
 
-    # ★R1: flash attention — score (8,T,T) materialise 제거 (R0 6줄 대체)
-    ctx = F.scaled_dot_product_attention(qh, kh, vh, is_causal=True)  # (8,T,64)
+    # ★baseline: naive causal attention. flash 백엔드 = 이 스택서 unavailable,
+    # sdpa math fallback도 naive보다 느림 (측정 반증). naive가 현 챔피언.
+    scores = torch.matmul(qh, kh.transpose(-1, -2)) / (HD ** 0.5)  # (8,T,T)
+    mask = torch.triu(torch.full((T, T), float("-inf"), device=x.device, dtype=x.dtype), 1)
+    attn = torch.softmax(scores + mask, dim=-1)
+    ctx = torch.matmul(attn, vh)                          # (8,T,64)
     ctx = ctx.transpose(0, 1).reshape(T, D)
 
     attn_out = ctx @ WO.t()
@@ -146,20 +152,60 @@ def _check(device):
     return ok
 
 
-def _bench(device, T=2048, iters=50):
-    x, w, cos, sin = _make_case(T, device)
-    out = torch.empty(T, D, device=device)
+def solve_flash4d(x, output, weights, cos, sin, seq_len):
+    """R1' — flash attn via 4D SDPA. 이전 세션이 3D (H,T,D)로 불러
+    "No available kernel"→math fallback 오결론. flash 커널은 4D (B,H,T,D) 필수.
+    동일 입력에서 naive 대비 재측정용."""
+    T = seq_len
+
+    def W(off, r, c):
+        return weights[off:off + r * c].view(r, c)
+    w1 = weights[O_RMS1:O_WQ]; WQ = W(O_WQ, NQ*HD, D); WK = W(O_WK, NKV*HD, D)
+    WV = W(O_WV, NKV*HD, D); WO = W(O_WO, D, D); w2 = weights[O_RMS2:O_WG]
+    Wg = W(O_WG, FF, D); Wu = W(O_WU, FF, D); Wd = W(O_WD, D, FF)
+    h = _rmsnorm(x, w1)
+    q = _rope((h @ WQ.t()).view(T, NQ, HD), cos, sin)
+    k = _rope((h @ WK.t()).view(T, NKV, HD), cos, sin)
+    v = (h @ WV.t()).view(T, NKV, HD)
+    k = k.repeat_interleave(NQ // NKV, dim=1)
+    v = v.repeat_interleave(NQ // NKV, dim=1)
+    qh = q.transpose(0, 1).unsqueeze(0)   # (1,8,T,64) ← 4D 필수
+    kh = k.transpose(0, 1).unsqueeze(0)
+    vh = v.transpose(0, 1).unsqueeze(0)
+    ctx = F.scaled_dot_product_attention(qh, kh, vh, is_causal=True)
+    ctx = ctx.squeeze(0).transpose(0, 1).reshape(T, D)
+    x1 = x + ctx @ WO.t()
+    h2 = _rmsnorm(x1, w2)
+    act = F.silu(h2 @ Wg.t()) * (h2 @ Wu.t())
+    output.copy_(x1 + act @ Wd.t())
+
+
+VARIANTS = {"naive": solve, "flash4d": solve_flash4d}
+
+
+def _time(fn, x, w, cos, sin, T, out, iters=50):
     for _ in range(10):
-        solve(x, out, w, cos, sin, T)
+        fn(x, out, w, cos, sin, T)
     torch.cuda.synchronize()
     s = torch.cuda.Event(True); e = torch.cuda.Event(True)
     s.record()
     for _ in range(iters):
-        solve(x, out, w, cos, sin, T)
+        fn(x, out, w, cos, sin, T)
     e.record(); torch.cuda.synchronize()
-    ms = s.elapsed_time(e) / iters
-    print(f"bench T={T}: {ms:.3f} ms/iter  (R0 naive 3.495 / R1 flash 1.723 기준)")
-    return ms
+    return s.elapsed_time(e) / iters
+
+
+def _bench(device, T=2048, iters=50):
+    x, w, cos, sin = _make_case(T, device)
+    out = torch.empty(T, D, device=device)
+    ref = _reference(x, w, cos, sin, T)
+    print(f"bench T={T}  (R0 naive 3.495 / R1 flash 1.723 기준):")
+    for name, fn in VARIANTS.items():
+        fn(x, out, w, cos, sin, T)
+        ok = torch.allclose(out, ref, atol=1e-3, rtol=1e-3)
+        ms = _time(fn, x, w, cos, sin, T, out, iters)
+        print(f"  {name:9}: {ms:.3f} ms/iter  correct={'PASS' if ok else 'FAIL'}")
+    return None
 
 
 if __name__ == "__main__":
