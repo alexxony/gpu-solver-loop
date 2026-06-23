@@ -12,6 +12,8 @@ from typing import Callable
 from signals import Signal
 
 SLOW_LATENCY_US = 50.0  # "느림" 임계 (PoC FFN mul 76μs 기준 근방). evolver가 조정 가능.
+WEIGHT_GATE = 0.05      # ≥5% 비중 게이트 (PoC R3': 커널 -39%였으나 비중 2.5%<5% → 전체 1%).
+                        # evolver가 조정 가능한 임계. trajectory가 검증한 핵심 룰.
 
 
 @dataclass
@@ -35,49 +37,69 @@ class Rule:
 
 
 def seed_rules() -> list[Rule]:
-    """spec §3.2 시드 5~6개. 그대로 박음."""
+    """시드룰 = PoC R3~R7 trajectory가 측정으로 검증한 룰 + 일반 CUDA 룰.
+
+    trajectory 룰(priority 0~2)이 일반 룰(3~)보다 우선 — 이 워크로드선 dtype/
+    텐서코어/비중 게이트가 지배적이었음. 임계값(WEIGHT_GATE 등)은 evolver가 조정 가능.
+    """
     return [
+        # ── priority 0: 게이트 (먼저 거른다 — 헛 타깃 차단) ──
+        Rule(
+            label="below_weight_gate",
+            cond=lambda t: 0 < t.weight_pct < WEIGHT_GATE,
+            prompt="STOP: 비중 < 5%. 커널 크게 줄여도 전체 이득 묻힘 (R3' -39%→전체1%).",
+            rationale="전체 이득 ≤ 커널 비중 (Amdahl). 비중<게이트면 최적화 무의미",
+            priority=0,
+        ),
+        # ── priority 1: 텐서코어 (이 워크로드 최대 이득 R5, 최대 함정 bf16) ──
+        Rule(
+            label="fp32_no_tensorcore",
+            cond=lambda t: t.weight_pct >= WEIGHT_GATE and t.compute_tput > 0
+            and not t.tensorcore_active,
+            prompt="matmul 정밀도 TF32로: torch.set_float32_matmul_precision('high'). "
+                   "fp32 sgemm은 텐서코어 미사용 (R5: matmul 52.7%→20.3%, 전체 1.71×).",
+            rationale="fp32 GEMM = CUDA코어, 텐서코어 놀고있음 → TF32로 태우면 대폭↓",
+            priority=1,
+        ),
+        Rule(
+            label="tensorcore_saturated",
+            cond=lambda t: t.tensorcore_active and t.latency_us > SLOW_LATENCY_US,
+            prompt="STOP: 이미 텐서코어 경로. 저정밀(bf16) 추가 가속 거의 없음, "
+                   "정확성만 악화 (R6 반증: TF32 0.853 vs bf16 0.850, 동률).",
+            rationale="A100 TF32 throughput ≈ bf16 (같은 TC 파이프) → 저정밀 무효",
+            priority=1,
+        ),
+        # ── priority 2: 융합 (게이트 통과한 메모리바운드만, 약 이득 R3') ──
+        Rule(
+            label="memory_bound_fusable",
+            cond=lambda t: t.weight_pct >= WEIGHT_GATE and t.bw_pct > 0.5
+            and not t.tensorcore_active,
+            prompt="elementwise 연쇄를 1커널 Triton 융합 (silu*up류). matmul은 cuBLAS 유지. "
+                   "주의: 융합해도 launch 오버헤드로 승격 안 될 수 있음 — 실측 비교 필수.",
+            rationale="메모리바운드 = HBM 왕복 천장 → 융합으로 중간텐서 왕복 제거",
+            priority=2,
+        ),
+        # ── priority 3+: 일반 CUDA 룰 (다른 워크로드/커널 대비, 보존) ──
         Rule(
             label="memory_saturated",
             cond=lambda t: t.bw_pct > 0.8,
             prompt="STOP: 대역폭 포화, 손댈 것 없음",
             rationale="elementwise는 BW가 천장 (NVIDIA roofline: AI<ridge → mem bound)",
-            priority=0,
+            priority=3,
         ),
         Rule(
             label="uncoalesced",
             cond=lambda t: t.load_eff < 0.7,
             prompt="인덱싱 재배열 + shared 타일링으로 합착 접근 복구",
             rationale="비합착 접근 = 한 워프가 여러 캐시라인 → 대역폭 낭비",
-            priority=1,
+            priority=4,
         ),
         Rule(
             label="reg_pressure",
             cond=lambda t: t.occ < 0.5 and t.reg > 64,
             prompt="스레드 수↓ 또는 __launch_bounds__로 레지스터 압박 완화",
             rationale="점유율 제한 = 레지스터 (SM당 레지스터 유한 → 동시 워프↓)",
-            priority=2,
-        ),
-        Rule(
-            label="oversync",
-            cond=lambda t: t.stall_reason == "sync",
-            prompt="__syncthreads 축소 / 더블버퍼링으로 동기화 stall 제거",
-            rationale="과도한 동기화 = 워프가 배리어서 대기 = stall",
-            priority=2,
-        ),
-        Rule(
-            label="compute_bound",
-            cond=lambda t: t.bw_pct < 0.6 and t.latency_us > SLOW_LATENCY_US,
-            prompt="FMA 활용 / 정밀도 낮추기 (fp32→tf32) / 연산 융합",
-            rationale="대역폭 여유인데 느림 = 연산이 천장 (roofline: AI>ridge)",
-            priority=1,
-        ),
-        Rule(
-            label="low_occupancy_latency",
-            cond=lambda t: t.occ < 0.5 and t.reg <= 64,
-            prompt="블록당 스레드↑ 또는 ILP↑로 지연 은닉 강화",
-            rationale="점유율 낮지만 레지스터 아님 → 워프 부족, 지연 은닉 실패",
-            priority=3,
+            priority=5,
         ),
     ]
 
@@ -104,36 +126,47 @@ def match(sig: Signal, rules: list[Rule]) -> Hypothesis | None:
     i, r = min(live, key=lambda ir: (ir[1].priority, -ir[1].confidence))
     return Hypothesis(
         label=r.label, prompt=r.prompt, rationale=r.rationale,
-        rule_idx=i, is_stop=r.label == "memory_saturated",
+        rule_idx=i, is_stop=r.label in STOP_LABELS,
     )
+
+
+# STOP 라벨 = 더 손댈 것 없는 포화/무효 (정직한 종료). trajectory 반증서 도출.
+STOP_LABELS = {"memory_saturated", "below_weight_gate", "tensorcore_saturated"}
 
 
 if __name__ == "__main__":
     from signals import from_dict
     rules = seed_rules()
 
-    # self-check 1: 포화 elementwise → STOP (spec sigmoid 예제)
-    h = match(from_dict({"bw_pct": 0.85, "compute_tput": 0.15, "load_eff": 1.0}), rules)
-    assert h is not None and h.label == "memory_saturated" and h.is_stop, h
+    # self-check 1: 비중<5% → below_weight_gate STOP (R3'/R7 게이트)
+    h = match(from_dict({"weight_pct": 0.025, "bw_pct": 0.6, "latency_us": 36.0}), rules)
+    assert h is not None and h.label == "below_weight_gate" and h.is_stop, h
 
-    # self-check 2: 비합착 → uncoalesced
-    h = match(from_dict({"bw_pct": 0.4, "load_eff": 0.55}), rules)
-    assert h is not None and h.label == "uncoalesced", h
+    # self-check 2: 비중≥5% fp32 matmul 텐서코어 off → TF32 (R5 최대 이득)
+    h = match(from_dict({"weight_pct": 0.527, "compute_tput": 0.8,
+                         "tensorcore_active": False, "latency_us": 100.0}), rules)
+    assert h is not None and h.label == "fp32_no_tensorcore", h
+    assert not h.is_stop, h
 
-    # self-check 3: 연산바운드 (BW 여유 + 느림)
-    h = match(from_dict({"bw_pct": 0.3, "latency_us": 76.0, "load_eff": 1.0}), rules)
-    assert h is not None and h.label == "compute_bound", h
+    # self-check 3: 텐서코어 이미 활성 + 느림 → STOP, 저정밀 무효 (R6 bf16 반증)
+    h = match(from_dict({"weight_pct": 0.49, "tensorcore_active": True,
+                         "latency_us": 100.0}), rules)
+    assert h is not None and h.label == "tensorcore_saturated" and h.is_stop, h
 
-    # self-check 4: 아무 룰도 안 맞으면 None
-    h = match(from_dict({"bw_pct": 0.5, "load_eff": 0.9, "occupancy": 0.9,
-                         "latency_us": 10.0}), rules)
+    # self-check 4: 비중≥5% 메모리바운드 텐서코어 off → 융합 (R3' 약적중)
+    h = match(from_dict({"weight_pct": 0.11, "bw_pct": 0.7, "compute_tput": 0.1,
+                         "tensorcore_active": False, "latency_us": 36.0}), rules)
+    assert h is not None and h.label in ("fp32_no_tensorcore", "memory_bound_fusable"), h
+    # compute_tput 낮으면 fp32_no_tensorcore의 compute_tput>0 조건은 통과하나
+    # priority 1(텐서코어)이 2(융합)보다 우선 → fp32_no_tensorcore 선택될 수 있음.
+    # 순수 메모리바운드(compute_tput=0) 케이스:
+    h = match(from_dict({"weight_pct": 0.11, "bw_pct": 0.7, "compute_tput": 0.0,
+                         "tensorcore_active": False, "latency_us": 36.0}), rules)
+    assert h is not None and h.label == "memory_bound_fusable", h
+
+    # self-check 5: 아무 룰도 안 맞으면 None (작은 비중 0, 정상)
+    h = match(from_dict({"weight_pct": 0.0, "bw_pct": 0.5, "load_eff": 0.9,
+                         "occupancy": 0.9, "latency_us": 10.0}), rules)
     assert h is None, h
-
-    # self-check 5: priority 동률 시 confidence 높은 쪽 (탐색-활용)
-    rules[1].success, rules[1].fail = 1, 9   # uncoalesced 신뢰 0.1
-    rules[4].success, rules[4].fail = 9, 1   # compute_bound 신뢰 0.9 (priority 동일=1)
-    h = match(from_dict({"bw_pct": 0.4, "load_eff": 0.55,
-                         "latency_us": 76.0}), rules)  # 둘 다 발화 가능
-    assert h is not None and h.label == "compute_bound", h  # 신뢰 높은 쪽
 
     print("rules.py self-check PASS")

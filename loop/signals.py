@@ -18,6 +18,9 @@ class Signal:
     bw_pct: float = 0.0           # achieved DRAM throughput %  (0~1)
     compute_tput: float = 0.0     # achieved compute %          (0~1)
     latency_us: float = 0.0       # 커널 측정 시간 (느림 판정용)
+    # PoC R3~R7 trajectory가 요구한 신호 (per-kernel 메트릭만으론 부족)
+    weight_pct: float = 0.0       # 이 커널 / 전체 latency 비중 (0~1). ≥5% 게이트 핵심.
+    tensorcore_active: bool = False  # 텐서코어 경로 사용? (sgemm vs TC-gemm 구분)
 
     # 룰 람다가 짧게 쓰도록 alias (spec §3.2 표기와 일치)
     @property
@@ -35,7 +38,11 @@ NCU_METRIC_MAP = {
     "gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed": "bw_pct",
     "sm__throughput.avg.pct_of_peak_sustained_elapsed": "compute_tput",
     "gpu__time_duration.sum": "latency_us",
+    # 텐서코어 파이프 활성 사이클 (>0 = TC 경로). bf16/TF32 무효 판정용.
+    "sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_active": "_tc_pct",
 }
+# weight_pct = 커널/전체 비중, ncu 단일 메트릭 아님 → parse_ncu_rows 밖에서
+# 전체 합 대비로 주입 (harness가 채움). tensorcore_active = _tc_pct > 0.
 
 
 def _to_fraction(field: str, raw: float) -> float:
@@ -62,7 +69,10 @@ def parse_ncu_rows(rows: list[dict]) -> Signal:
             raw = float(str(val).replace(",", ""))
         except ValueError:
             continue
-        setattr(sig, field, _to_fraction(field, raw))
+        if field == "_tc_pct":           # 텐서코어 활성 % → bool
+            sig.tensorcore_active = raw > 0.0
+        else:
+            setattr(sig, field, _to_fraction(field, raw))
     return sig
 
 
