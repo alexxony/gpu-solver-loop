@@ -1,10 +1,13 @@
-"""Baseline champion — Llama decoder block, naive attention.
+"""Champion — Llama decoder block, flash attention (4D SDPA).
 
-ENV: A100-SXM4-40GB + torch 2.11.0+cu128 (CUDA 12.8). 이 스택 기준 새 베이스라인.
-과거 PoC(A100, 옛 torch)에선 flash 2.03× 챔피언이었으나 — 이 스택에서
-F.scaled_dot_product_attention flash 백엔드 = "No available kernel" (측정 반증).
-sdpa default(math fallback) 2.246ms > naive score 1.777ms. 따라서 현 챔피언 = naive.
-= 자동 루프가 잡을 발견의 실물: 정적 가정(flash 빠름)이 측정에 반증됨.
+ENV: A100-SXM4-40GB + torch 2.11.0+cu128 (CUDA 12.8).
+챔피언 = flash4d. T=2048: flash4d 1.445ms vs naive 3.244ms (2.25×, 둘 다 PASS).
+
+이전 세션은 SDPA를 3D (H,T,D)로 호출 → "No available kernel" → math fallback →
+"이 스택서 flash 죽음, naive 챔피언" 오결론. 진범 = 호출 차원. flash 커널은
+4D (B,H,T,D) 필수. isolated probe: flash avail=True, 4D OK / 3D Aborting.
+→ 자동 루프가 잡을 발견의 실물: 정적 가정(flash 죽음)이 측정에 반증됨.
+naive 경로는 _reference()에 보존 (교차검증 + 비교 baseline).
 
 단일소스 (.py, ipynb 폐기 — PoC §110). 글루 Generator의 시드 코드로도 쓰임.
 사용: python solve.py --check | --bench | --profile
@@ -75,18 +78,13 @@ def solve(x, output, weights, cos, sin, seq_len):
     k = k.repeat_interleave(NQ // NKV, dim=1)
     v = v.repeat_interleave(NQ // NKV, dim=1)
 
-    # (8,T,64)
-    qh = q.transpose(0, 1)
-    kh = k.transpose(0, 1)
-    vh = v.transpose(0, 1)
-
-    # ★baseline: naive causal attention. flash 백엔드 = 이 스택서 unavailable,
-    # sdpa math fallback도 naive보다 느림 (측정 반증). naive가 현 챔피언.
-    scores = torch.matmul(qh, kh.transpose(-1, -2)) / (HD ** 0.5)  # (8,T,T)
-    mask = torch.triu(torch.full((T, T), float("-inf"), device=x.device, dtype=x.dtype), 1)
-    attn = torch.softmax(scores + mask, dim=-1)
-    ctx = torch.matmul(attn, vh)                          # (8,T,64)
-    ctx = ctx.transpose(0, 1).reshape(T, D)
+    # ★champion: flash attention. 4D (B,H,T,D) 필수 — 3D면 "No available kernel"
+    # → math fallback (이전 세션 오결론의 원인). naive 대비 2.25× (측정 확정).
+    qh = q.transpose(0, 1).unsqueeze(0)   # (1,8,T,64)
+    kh = k.transpose(0, 1).unsqueeze(0)
+    vh = v.transpose(0, 1).unsqueeze(0)
+    ctx = F.scaled_dot_product_attention(qh, kh, vh, is_causal=True)
+    ctx = ctx.squeeze(0).transpose(0, 1).reshape(T, D)    # (T,512)
 
     attn_out = ctx @ WO.t()
     x1 = x + attn_out
@@ -152,10 +150,9 @@ def _check(device):
     return ok
 
 
-def solve_flash4d(x, output, weights, cos, sin, seq_len):
-    """R1' — flash attn via 4D SDPA. 이전 세션이 3D (H,T,D)로 불러
-    "No available kernel"→math fallback 오결론. flash 커널은 4D (B,H,T,D) 필수.
-    동일 입력에서 naive 대비 재측정용."""
+def solve_naive(x, output, weights, cos, sin, seq_len):
+    """이전 챔피언 — naive causal attention (score matrix materialize).
+    flash4d 대비 비교 baseline. 측정: 3.244ms vs flash4d 1.445ms (2.25× 느림)."""
     T = seq_len
 
     def W(off, r, c):
@@ -169,18 +166,17 @@ def solve_flash4d(x, output, weights, cos, sin, seq_len):
     v = (h @ WV.t()).view(T, NKV, HD)
     k = k.repeat_interleave(NQ // NKV, dim=1)
     v = v.repeat_interleave(NQ // NKV, dim=1)
-    qh = q.transpose(0, 1).unsqueeze(0)   # (1,8,T,64) ← 4D 필수
-    kh = k.transpose(0, 1).unsqueeze(0)
-    vh = v.transpose(0, 1).unsqueeze(0)
-    ctx = F.scaled_dot_product_attention(qh, kh, vh, is_causal=True)
-    ctx = ctx.squeeze(0).transpose(0, 1).reshape(T, D)
+    qh, kh, vh = q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1)  # (8,T,64)
+    scores = torch.matmul(qh, kh.transpose(-1, -2)) / (HD ** 0.5)
+    mask = torch.triu(torch.full((T, T), float("-inf"), device=x.device, dtype=x.dtype), 1)
+    ctx = (torch.softmax(scores + mask, dim=-1) @ vh).transpose(0, 1).reshape(T, D)
     x1 = x + ctx @ WO.t()
     h2 = _rmsnorm(x1, w2)
     act = F.silu(h2 @ Wg.t()) * (h2 @ Wu.t())
     output.copy_(x1 + act @ Wd.t())
 
 
-VARIANTS = {"naive": solve, "flash4d": solve_flash4d}
+VARIANTS = {"flash4d": solve, "naive": solve_naive}
 
 
 def _time(fn, x, w, cos, sin, T, out, iters=50):
@@ -199,7 +195,7 @@ def _bench(device, T=2048, iters=50):
     x, w, cos, sin = _make_case(T, device)
     out = torch.empty(T, D, device=device)
     ref = _reference(x, w, cos, sin, T)
-    print(f"bench T={T}  (R0 naive 3.495 / R1 flash 1.723 기준):")
+    print(f"bench T={T}  (챔피언=flash4d 1.445 / naive 3.244 기준):")
     for name, fn in VARIANTS.items():
         fn(x, out, w, cos, sin, T)
         ok = torch.allclose(out, ref, atol=1e-3, rtol=1e-3)
