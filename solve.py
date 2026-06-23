@@ -22,6 +22,11 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
+# R5: matmul = 전체 52.7% (ncu 최대 천장). fp32 sgemm은 텐서코어 미사용.
+# TF32 켜면 sgemm→텐서코어 → matmul 대폭↓. 측정: flash4d 1.432→0.840ms (1.71×),
+# 정확성 유지(maxdiff 3.7e-4 < atol 1e-3 PASS). 전역 1회 설정.
+torch.set_float32_matmul_precision("high")
+
 
 @triton.jit
 def _silu_mul_kernel(gate_ptr, up_ptr, out_ptr, n, BLOCK: tl.constexpr):
