@@ -1,0 +1,22 @@
+# AlphaGPU challenge files — CC BY-NC-ND, do NOT commit (라이선스 ND 충돌 회피, spec §6)
+challenge.html
+challenge.py
+starter_raw.triton.py
+
+# notebooks — .py 단일소스 결정 (ipynb 안 씀)
+*.ipynb
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# run artifacts
+*.jsonl
+*.ncu-rep
+*.nsys-rep
+
+# tooling state (OMC/agent 부산물, 코드 아님)
+.omc/
+.rat/
+.bkit/
