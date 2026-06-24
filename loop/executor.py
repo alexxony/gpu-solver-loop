@@ -77,13 +77,16 @@ def _profile_ncu(code_path: str) -> dict | None:
     ncu --csv 출력을 signals.parse_ncu_rows로 정규화. 단일 모듈 가정 →
     weight_pct=1.0 (전체가 이 커널). 여러 커널이면 후속 harness가 합산.
     """
+    # --launch-count 1: 커널당 replay 1회 (측정: replay가 12분 주범, 6배↓ 5.7s).
+    #   메트릭 정밀도 약간↓(평균 표본 1)이나 PoC 충분. replay가 wall-clock 지배.
+    # --: ncu 플래그 끝 표시 (s2-105: 없으면 --metrics를 실행파일로 오인).
     cmd = [
         "ncu", "--metrics", NCU_METRICS, "--csv",
-        "--target-processes", "all",
-        sys.executable, code_path, "--profile",
+        "--target-processes", "all", "--launch-count", "1",
+        "--", sys.executable, code_path, "--profile",
     ]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     if r.returncode != 0:
