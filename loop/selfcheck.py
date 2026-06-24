@@ -42,8 +42,11 @@ def differentiator_e2e() -> None:
 
     print("\n=== 차별점 E2E: 룰 진화 before/after ===")
 
-    # compute_bound(idx4)가 틀린 신호 — BW 여유+느림인데 실제론 안 고쳐짐.
-    bad_sig = {"bw_pct": 0.3, "latency_us": 76.0, "load_eff": 1.0}
+    # fp32_no_tensorcore(idx1)가 발화하는 신호 — 비중≥게이트 + fp32 matmul +
+    # TC off → "TF32로 태워라" 가설. 단 이 가짜 시나리오선 개선 실패(improved=False)
+    # 반복 → 진화가 신뢰도 강등→폐기. (스키마: weight_pct/compute_tput 필수)
+    bad_sig = {"weight_pct": 0.2, "compute_tput": 0.4, "tensorcore_active": False,
+               "bw_pct": 0.3, "latency_us": 76.0, "load_eff": 1.0}
 
     fd, p = tempfile.mkstemp(suffix=".jsonl"); os.close(fd); os.unlink(p)
     try:
