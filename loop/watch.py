@@ -48,22 +48,21 @@ def git_sync_push(mb: Path) -> None:
         _git(mb, "push", "-q")
 
 
-# ── GPU 실행부 (stub — Colab서 채움) ──
+# ── GPU 실행부 ──
+# 실구현은 executor.execute_request (torch/ncu 필요 → Colab). 여기선 lazy import:
+# torch 있으면 실구현을 기본 execute로, 없으면(self-check 등) stub.
 
 def execute_request(cmd: dict) -> dict:
-    """REQ → RES. 여기가 진짜 GPU 작업. Colab서 구현.
+    """REQ → RES. executor.execute_request로 위임. torch 부재 시 stub.
 
-    1. cmd["code"] = 생성된 커널 소스 → 파일로.
-    2. correctness gate: challenge reference_impl과 비교 → passed, max_abs_err.
-    3. 통과 시 ncu 프로파일 → signal_dict (signals.NCU_METRIC_MAP 기준), latency.
-    4. weight_pct = 이 커널 / 전체 latency (harness가 합산, 여기선 단일커널이면 1.0).
-
-    반환 스키마 = mailbox.MailboxProfiler._parse가 읽는 RES 형식.
+    실구현 흐름(executor): cmd['code'](전체 solve.py) → _reference 교차검증 gate →
+    ncu 프로파일(or Event fallback) → signal_dict. 반환 = RES 스키마.
     """
-    raise NotImplementedError(
-        "Colab GPU 환경서 구현: 컴파일 → reference_impl gate → ncu 프로파일. "
-        "스키마는 _error_result/아래 주석 참조."
-    )
+    try:
+        from . import executor
+    except ImportError:
+        import executor                  # Colab !python 직접 실행 대비
+    return executor.execute_request(cmd)
 
 
 def _error_result(rid: str, err: str) -> dict:
@@ -109,14 +108,18 @@ def watch_loop(
     sync_fn: Callable[[Path], None] = git_sync_push,
     sleep_fn: Callable[[float], None] = time.sleep,
     max_iters: int | None = None,     # None = 무한 (Colab). 테스트는 유한.
+    execute: Callable[[dict], dict] = execute_request,
 ) -> None:
-    """git pull → process_pending → push 반복. Colab 셀에서 무한 실행."""
+    """git pull → process_pending → push 반복. Colab 셀에서 무한 실행.
+
+    execute 기본값 = executor 위임(실 GPU). self-check는 stub 주입해 GPU 0 유지.
+    """
     mb = Path(mailbox_dir)
     i = 0
     while max_iters is None or i < max_iters:
         try:
             sync_fn(mb)                    # pull REQ (+ 이전 RES push)
-            done = process_pending(mb)
+            done = process_pending(mb, execute=execute)
             if done:
                 sync_fn(mb)                # RES 즉시 push
         except Exception:
@@ -162,19 +165,22 @@ def _selfcheck() -> None:
         rc = _read_json(mb / "result" / "RES-c.json")
         assert rc["passed"] is False and "ncu crashed" in rc["error"]
 
-    # watch_loop: 유한 반복 + sync/sleep 주입 (git·실시간 0)
+    # watch_loop: 유한 반복 + sync/sleep/execute 주입 (git·GPU·실시간 0)
     with tempfile.TemporaryDirectory() as d2:
         mb2 = Path(d2)
         _write_json(mb2 / "cmd" / "REQ-x.json", {"id": "x", "code": "# k"})
         calls = {"sync": 0, "sleep": 0}
         def syncf(_m): calls["sync"] += 1
         def sleepf(_s): calls["sleep"] += 1
-        watch_loop(d2, poll_s=0.0,
-                   sync_fn=syncf, sleep_fn=sleepf, max_iters=2)
+        # 기본 execute는 executor(torch/ncu) 위임 → self-check는 stub 주입해 GPU 0.
+        def stub_exec(cmd):
+            raise NotImplementedError("self-check stub")
+        watch_loop(d2, poll_s=0.0, sync_fn=syncf, sleep_fn=sleepf,
+                   max_iters=2, execute=stub_exec)
         assert calls["sleep"] == 2
         assert calls["sync"] >= 2               # pull 2회 + 처리 후 push
-        assert (mb2 / "result" / "RES-x.json").exists()  # 기본 execute는
-        # NotImplementedError → _error_result 경유. passed=False지만 RES 존재.
+        # stub 예외 → _error_result 경유. passed=False지만 RES 존재(실패 격리).
+        assert (mb2 / "result" / "RES-x.json").exists()
         rx = _read_json(mb2 / "result" / "RES-x.json")
         assert rx["passed"] is False and "NotImplementedError" in rx["error"]
 
