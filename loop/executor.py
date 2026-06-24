@@ -25,8 +25,7 @@ try:
 except ImportError:                      # 스크립트 직접 실행(Colab !python) 대비
     import signals
 
-# gate가 도는 seq_len — solve.py _check와 동일 (단/짧음/중간/타깃).
-GATE_SEQ_LENS = (1, 4, 128, 2048)
+# gate 허용오차 fallback — solve.py가 GATE_ATOL/RTOL 안 주면 이거 씀.
 GATE_ATOL = 1e-3
 GATE_RTOL = 1e-3
 
@@ -49,25 +48,38 @@ def _load_solve_module(code: str):
     return mod, tmp.name
 
 
-def _run_gate(mod) -> tuple[bool, float]:
-    """solve(mod.solve)를 mod._reference와 교차검증. (passed, max_abs_err).
+def _gate_sizes(mod) -> tuple:
+    """게이트 크기 목록 — solve.py가 GATE_SIZES 노출하면 그거, 아니면 fallback."""
+    return tuple(getattr(mod, "GATE_SIZES", (1, 4, 128, 2048)))
 
-    solve.py에 이미 있는 _make_case/_reference 재사용 — 다른 코드 경로라 교차검증
-    유효. GATE_SEQ_LENS 전부 PASS해야 passed=True.
+
+def _atol_rtol(mod) -> tuple[float, float]:
+    return (getattr(mod, "GATE_ATOL", GATE_ATOL),
+            getattr(mod, "GATE_RTOL", GATE_RTOL))
+
+
+def _run_gate(mod) -> tuple[bool, float]:
+    """solve를 reference와 교차검증. (passed, max_abs_err).
+
+    문제-범용 어댑터 계약 (solve.py가 노출):
+      make_case(size, device) -> case      # 입력 묶음 (문제별 임의)
+      run_solve(case, device) -> Tensor    # solve 호출 → output
+      reference(case, device) -> Tensor    # 정답
+    GATE_SIZES 전부 PASS해야 passed=True. 다른 코드 경로라 교차검증 유효.
     """
     import torch
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
+    atol, rtol = _atol_rtol(mod)
     worst_err = 0.0
     ok = True
-    for T in GATE_SEQ_LENS:
-        x, w, cos, sin = mod._make_case(T, dev)
-        out = torch.empty(T, mod.D, device=dev)
-        mod.solve(x, out, w, cos, sin, T)
-        ref = mod._reference(x, w, cos, sin, T)
+    for size in _gate_sizes(mod):
+        case = mod.make_case(size, dev)
+        out = mod.run_solve(case, dev)
+        ref = mod.reference(case, dev)
         err = (out - ref).abs().max().item()
         worst_err = max(worst_err, err)
-        ok &= torch.allclose(out, ref, atol=GATE_ATOL, rtol=GATE_RTOL)
+        ok &= torch.allclose(out, ref, atol=atol, rtol=rtol)
     return ok, worst_err
 
 
@@ -123,19 +135,18 @@ def _profile_event(mod) -> dict:
     import torch
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    T = 2048
-    x, w, cos, sin = mod._make_case(T, dev)
-    out = torch.empty(T, mod.D, device=dev)
+    size = getattr(mod, "PROFILE_SIZE", _gate_sizes(mod)[-1])
+    case = mod.make_case(size, dev)
     if dev == "cpu":                     # GPU 없으면 latency 의미 없음
         return {"latency_us": 0.0, "weight_pct": 1.0}
     for _ in range(10):                  # warm-up
-        mod.solve(x, out, w, cos, sin, T)
+        mod.run_solve(case, dev)
     torch.cuda.synchronize()
     s, e = torch.cuda.Event(True), torch.cuda.Event(True)
     s.record()
     iters = 50
     for _ in range(iters):
-        mod.solve(x, out, w, cos, sin, T)
+        mod.run_solve(case, dev)
     e.record()
     torch.cuda.synchronize()
     ms_per = s.elapsed_time(e) / iters

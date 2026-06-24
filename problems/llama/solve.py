@@ -260,6 +260,28 @@ def _bench(device, T=2048, iters=50):
     return None
 
 
+# ── executor 통일 어댑터 계약 (문제-범용 gate/profile용) ──
+# executor._run_gate / _profile_event가 make_case/run_solve/reference만 호출.
+# 기존 _make_case/solve/_reference를 래핑 — 모양(weights/cos/sin)을 case에 숨김.
+GATE_SIZES = (1, 4, 128, 2048)
+PROFILE_SIZE = 2048
+
+
+def make_case(size, device):
+    x, weights, cos, sin = _make_case(size, device)
+    return {"x": x, "weights": weights, "cos": cos, "sin": sin, "T": size}
+
+
+def run_solve(case, device):
+    out = torch.empty(case["T"], D, device=device)
+    solve(case["x"], out, case["weights"], case["cos"], case["sin"], case["T"])
+    return out
+
+
+def reference(case, device):
+    return _reference(case["x"], case["weights"], case["cos"], case["sin"], case["T"])
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
