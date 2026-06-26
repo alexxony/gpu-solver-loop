@@ -88,6 +88,25 @@ class RealGenerator:
         return GenResult(code, code_hash(code))
 
 
+class CallbackGenerator:
+    """대행 generator — generate 호출 시 변형을 콜백에 위임 (사람/대화 에이전트).
+
+    API 키 없이 gain layer 입증용. RealGenerator와 동일 계약·구조, 단 _anthropic_call
+    대신 사람이 맥락(problem/가설/prev_code) 보고 코드 반환하는 콜백 주입.
+    = RealGenerator(seed, call_fn=사람콜백)와 동치. 별도 클래스는 의미 명시용.
+
+    진짜 대행 흐름: 콜백이 (problem, hypothesis_prompt, prev_code) 받아 변형 코드
+    문자열 반환. 미리 큐잉 불가(맥락 봐야 변형) → 콜백이 라운드별 맥락 처리.
+    """
+    def __init__(self, callback: Callable[[str, str | None, str | None], str]):
+        self.cb = callback
+
+    def generate(self, problem: str, hypothesis_prompt: str | None,
+                 prev_code: str | None) -> GenResult:
+        code = self.cb(problem, hypothesis_prompt, prev_code) or (prev_code or "")
+        return GenResult(code, code_hash(code))
+
+
 if __name__ == "__main__":
     # self-check: API·SDK·키·네트워크 0. fake call_fn으로 generate 흐름 검증.
 
@@ -125,4 +144,18 @@ if __name__ == "__main__":
     assert _extract_code("```\nY=2\n```") == "Y=2"
     assert _extract_code("no block here") == "no block here"
 
-    print("generator.py self-check PASS — generate 흐름(추출·프롬프트·폴백). 실 API는 키 있을 때.")
+    # 6. CallbackGenerator — 대행 콜백이 맥락 받아 코드 반환
+    ctx = {}
+    def cb(problem, hyp, prev):
+        ctx.update(problem=problem, hyp=hyp, prev=prev)
+        return "def solve(): return manual_variant()"
+    cg = CallbackGenerator(cb)
+    rc = cg.generate("groupnorm", "융합 시도", prev_code="def solve(): old()")
+    assert "manual_variant" in rc.code and len(rc.code_hash) == 10
+    assert ctx["problem"] == "groupnorm" and ctx["hyp"] == "융합 시도"
+    assert ctx["prev"] == "def solve(): old()"
+    # 콜백 빈 반환 → prev_code 유지 (라운드 안 죽음)
+    cg2 = CallbackGenerator(lambda p, h, pv: "")
+    assert cg2.generate("p", None, "PREV").code == "PREV"
+
+    print("generator.py self-check PASS — Real/Callback generate 흐름. 실 API는 키 있을 때.")
