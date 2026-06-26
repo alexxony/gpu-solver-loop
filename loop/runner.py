@@ -82,17 +82,21 @@ def run_problem(
     max_rounds: int = 8,
     poll_s: float = 5.0,
     timeout_s: float = 600.0,
+    rules=None,
 ) -> LoopResult:
     """한 문제를 자동 루프에 태운다 — 우편함 경유 측정 + 룰 진화.
 
     seed_code = 시드 솔버(solve.py 텍스트). sync_fn = git pull/push 1회(운용).
     반환 LoopResult.events = 진화 증거(evolver). ledger_path에 라운드 누적.
+
+    rules: 공유 룰 리스트. None이면 run_loop가 seed_rules() 새로 생성(단일문제).
+      다문제 라운드는 같은 rules 객체를 문제 간 주입 → 진화 누적 (04-multiproblem 설계).
     """
     profiler = MailboxProfiler(mailbox_dir, sync_fn=sync_fn,
                                poll_s=poll_s, timeout_s=timeout_s)
     glue = MailboxGlue(FixedGenerator(seed_code), profiler)
     ledger = Ledger(str(ledger_path))
-    return run_loop(problem, glue, ledger, max_rounds=max_rounds)
+    return run_loop(problem, glue, ledger, max_rounds=max_rounds, rules=rules)
 
 
 if __name__ == "__main__":
