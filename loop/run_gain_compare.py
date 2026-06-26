@@ -148,9 +148,14 @@ def main() -> int:
     if not (MAILBOX / ".git").exists():
         print(f"ERR: mailbox clone 없음 {MAILBOX}", file=sys.stderr); return 2
 
-    # variants/<problem>/R1.py, R2.py ... 순서 로드 (R0=seed라 R1부터)
-    variant_files = sorted(variants_dir.glob("R*.py"),
-                           key=lambda p: int(p.stem[1:]))
+    # variants/<problem>/R1.py, R2.py ... 순서 로드 (R0=seed라 R1부터).
+    # 'R<숫자>.py'만 (R0_seed_ref 등 비-순수숫자 stem 제외).
+    import re
+    def _rnum(p):
+        m = re.fullmatch(r"R(\d+)", p.stem)
+        return int(m.group(1)) if m else None
+    variant_files = sorted([p for p in variants_dir.glob("R*.py") if _rnum(p) is not None],
+                           key=_rnum)
     if not variant_files:
         print(f"ERR: variants 없음 (R*.py) in {variants_dir}", file=sys.stderr); return 2
     variant_codes = [f.read_text() for f in variant_files]
