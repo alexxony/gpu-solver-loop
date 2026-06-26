@@ -32,7 +32,9 @@ def _metric(sig) -> float:
 
 
 def run_loop(problem: str, glue, ledger: Ledger, rules: list[Rule] | None = None,
-             max_rounds: int = 8) -> LoopResult:
+             max_rounds: int = 8, evolve_enabled: bool = True) -> LoopResult:
+    # evolve_enabled=False = 정적 baseline (CUDAMaster류): 룰 고정, 진화 안 함.
+    #   매치는 하되 success/fail 누적·retire 스킵 → 같은 룰 영원히 발화.
     rules = rules if rules is not None else seed_rules()
     all_events: list[EvolutionEvent] = []
     best = -1.0
@@ -77,8 +79,14 @@ def run_loop(problem: str, glue, ledger: Ledger, rules: list[Rule] | None = None
         ledger.append(rec)
 
         # Rule Evolver: 직전 라운드의 룰 결과로 진화 (이번 발화룰 평가)
-        ev = evolve(rules, ledger, rule_idx, improved)
-        all_events.extend(ev)
+        # evolve_enabled=False(정적 baseline)면 스킵 → 룰 영원히 고정 (CUDAMaster류).
+        if evolve_enabled:
+            ev = evolve(rules, ledger, rule_idx, improved)
+            all_events.extend(ev)
+            # 룰판이 바뀌면(retire/propose) "수렴" 가정 무효 — 새 룰로 다시 탐색해야.
+            # no_improve 리셋해 converged 조기종료 막음 (폐기 후 발화 변경 관찰 가능).
+            if any(e.kind in ("retire", "propose") for e in ev):
+                no_improve = 0
 
         # STOP 라벨 = 포화군, 더 손댈 것 없음 (정직한 종료)
         if h and h.is_stop:

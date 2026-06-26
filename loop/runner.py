@@ -83,6 +83,7 @@ def run_problem(
     poll_s: float = 5.0,
     timeout_s: float = 600.0,
     rules=None,
+    evolve_enabled: bool = True,
 ) -> LoopResult:
     """한 문제를 자동 루프에 태운다 — 우편함 경유 측정 + 룰 진화.
 
@@ -96,7 +97,8 @@ def run_problem(
                                poll_s=poll_s, timeout_s=timeout_s)
     glue = MailboxGlue(FixedGenerator(seed_code), profiler)
     ledger = Ledger(str(ledger_path))
-    return run_loop(problem, glue, ledger, max_rounds=max_rounds, rules=rules)
+    return run_loop(problem, glue, ledger, max_rounds=max_rounds, rules=rules,
+                    evolve_enabled=evolve_enabled)
 
 
 if __name__ == "__main__":

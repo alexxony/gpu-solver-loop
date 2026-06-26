@@ -57,7 +57,9 @@ def retire_pass(rules: list[Rule]) -> list[EvolutionEvent]:
         if r.retired:
             continue
         n = r.success + r.fail
-        if r.fail >= RETIRE_AFTER_FAILS and r.confidence < RETIRE_MIN_CONF and n >= 4:
+        # conf<=RETIRE_MIN_CONF (경계 포함): demote 3회면 정확히 0.25 도달 →
+        # `<`면 한 끗 미달로 영영 폐기 안 됨 (run_evolution_compare서 발견한 버그).
+        if r.fail >= RETIRE_AFTER_FAILS and r.confidence <= RETIRE_MIN_CONF and n >= 4:
             before = r.confidence
             r.retired = True
             events.append(EvolutionEvent(
