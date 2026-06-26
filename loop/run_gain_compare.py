@@ -68,7 +68,8 @@ def _make_queued_callback(variant_codes: list[str], seed_code: str):
 
 def _run_track(label: str, problem: str, seed_code: str, variant_codes: list[str],
                mailbox_dir, ledger_path, sync_fn, max_rounds: int,
-               evolve_enabled: bool, poll_s: float, timeout_s: float) -> TrackResult:
+               evolve_enabled: bool, poll_s: float, timeout_s: float,
+               metric_mode: str = "occupancy") -> TrackResult:
     """한 트랙 실행 — 같은 variant 큐, evolve_enabled만 다름."""
     if Path(ledger_path).exists():
         Path(ledger_path).unlink()
@@ -76,11 +77,11 @@ def _run_track(label: str, problem: str, seed_code: str, variant_codes: list[str
     cb = _make_queued_callback(variant_codes, seed_code)
     gen = CallbackGenerator(cb)
 
-    print(f"\n=== 트랙 {label} (evolve={'ON' if evolve_enabled else 'OFF'}) ===")
+    print(f"\n=== 트랙 {label} (evolve={'ON' if evolve_enabled else 'OFF'}, metric={metric_mode}) ===")
     res = run_problem(problem, seed_code, mailbox_dir, ledger_path,
                       sync_fn=sync_fn, max_rounds=max_rounds, poll_s=poll_s,
                       timeout_s=timeout_s, rules=rules, generator=gen,
-                      evolve_enabled=evolve_enabled)
+                      evolve_enabled=evolve_enabled, metric_mode=metric_mode)
 
     led = Ledger(str(ledger_path))
     recs = [r for r in led.records if r.problem == problem]
@@ -92,14 +93,28 @@ def _run_track(label: str, problem: str, seed_code: str, variant_codes: list[str
                        res.stopped_reason, res.rounds)
 
 
-def _report(on: TrackResult, off: TrackResult) -> None:
+def _report(on: TrackResult, off: TrackResult, metric_mode: str = "occupancy") -> None:
     print("\n" + "=" * 56)
-    print("gain 비교 — 진화 ON vs OFF")
+    print(f"gain 비교 — 진화 ON vs OFF (metric={metric_mode})")
     print("=" * 56)
+
+    def _best_latency(t):
+        # latency mode: metric = -latency_us. best(max) = 가장 빠름. us로 복원.
+        vals = [m for _, m in t.metric_curve if m != 0.0]
+        return (-max(vals)) if vals else None
+
     for t in (off, on):
-        ms = [round(m, 4) for _, m in t.metric_curve]
-        print(f"\n[{t.label}] rounds={t.rounds} stop={t.stop_reason}")
-        print(f"  metric 곡선 : {ms}")
+        if metric_mode == "latency":
+            # 곡선 us 복원 (음수→양수), best = 최소 latency
+            us = [round(-m, 2) for _, m in t.metric_curve]
+            bl = _best_latency(t)
+            print(f"\n[{t.label}] rounds={t.rounds} stop={t.stop_reason}")
+            print(f"  latency 곡선: {us} us")
+            print(f"  best(최저)  : {round(bl,2) if bl is not None else 'N/A'} us")
+        else:
+            ms = [round(m, 4) for _, m in t.metric_curve]
+            print(f"\n[{t.label}] rounds={t.rounds} stop={t.stop_reason}")
+            print(f"  metric 곡선 : {ms}")
         print(f"  발화 룰     : {t.fired_rules}")
         print(f"  헛라운드    : {t.wasted_rounds}")
         print(f"  retire 수   : {t.retire_count}")
@@ -113,32 +128,50 @@ def _report(on: TrackResult, off: TrackResult) -> None:
     if on.fired_rules != off.fired_rules:
         gain_signals.append("발화 룰 시퀀스 다름 (진화가 룰 선택 바꿈)")
 
+    # 성능 gain: latency mode면 ON best가 OFF best보다 더 빠른가 (핵심 급소)
+    if metric_mode == "latency":
+        bon, boff = _best_latency(on), _best_latency(off)
+        if bon is not None and boff is not None:
+            if bon < boff:
+                gain_signals.append(f"★성능 gain★ ON best={bon:.2f}us < OFF best={boff:.2f}us (진화→더 빠른 커널)")
+            else:
+                print(f"  ⚠️ 성능 gain 없음 — ON best={bon:.2f}us, OFF best={boff:.2f}us (진화가 더 빠른 커널 못 냄)")
+
     if gain_signals:
         print("  ✅ gain 신호:")
         for g in gain_signals:
             print(f"     - {g}")
     else:
-        print("  ❌ gain 신호 없음 — ON/OFF 동일. 이 variant 큐론 진화 이득 미관찰.")
-        print("     (variant가 틀린 룰을 반복 발화시키게 설계돼야 retire가 갈림)")
-    print("\n⚠️ 경계: metric 곡선은 같을 수 있음(같은 코드 큐). gain은 룰 진화 지표")
-    print("   [retire/헛라운드/발화 다양성]으로 본다. 곡선 우상향=mechanism, 진화차이=gain.")
+        print("  ❌ gain 신호 없음 — ON/OFF 동일.")
+
+    if metric_mode == "latency":
+        print("\n⚠️ 경계: 성능 gain = ON best latency < OFF best. variant가 진짜 더 빠른 코드여야")
+        print("   곡선 우하향(us↓) 나옴. flat variant(코드 불변)면 곡선 평평 = 성능 gain 안 보임.")
+    else:
+        print("\n⚠️ 경계: occupancy mode — metric 곡선은 ON/OFF 같을 수 있음(같은 코드 큐).")
+        print("   gain은 룰 진화 지표[retire/헛라운드/발화 다양성]. 성능 gain은 --latency로.")
 
 
 def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "--selfcheck":
         return _selfcheck()
 
-    if len(sys.argv) < 3:
-        print("usage: python run_gain_compare.py <problem> <variants_dir> [max_rounds]",
+    # --latency 플래그 = 성능 gain 모드 (metric=latency_us, 낮을수록 좋음).
+    #   기본(플래그 없음) = occupancy 모드 (기존 동작).
+    argv = [a for a in sys.argv[1:] if a != "--latency"]
+    metric_mode = "latency" if "--latency" in sys.argv else "occupancy"
+
+    if len(argv) < 2:
+        print("usage: python run_gain_compare.py <problem> <variants_dir> [max_rounds] [--latency]",
               file=sys.stderr)
         print("       python run_gain_compare.py --selfcheck", file=sys.stderr)
         return 2
 
     from run_e2e import git_sync, MAILBOX, PROBLEMS
 
-    problem = sys.argv[1]
-    variants_dir = Path(sys.argv[2])
-    max_rounds = int(sys.argv[3]) if len(sys.argv) > 3 else 6
+    problem = argv[0]
+    variants_dir = Path(argv[1])
+    max_rounds = int(argv[2]) if len(argv) > 2 else 6
 
     seed_path = PROBLEMS / problem / "solve.py"
     if not seed_path.exists():
@@ -168,11 +201,13 @@ def main() -> int:
     led_base = MAILBOX.parent / "gain-compare"
     off = _run_track("evolve_OFF", problem, seed_code, variant_codes,
                      MAILBOX, f"{led_base}-off.jsonl", git_sync, max_rounds,
-                     evolve_enabled=False, poll_s=5.0, timeout_s=900.0)
+                     evolve_enabled=False, poll_s=5.0, timeout_s=900.0,
+                     metric_mode=metric_mode)
     on = _run_track("evolve_ON", problem, seed_code, variant_codes,
                     MAILBOX, f"{led_base}-on.jsonl", git_sync, max_rounds,
-                    evolve_enabled=True, poll_s=5.0, timeout_s=900.0)
-    _report(on, off)
+                    evolve_enabled=True, poll_s=5.0, timeout_s=900.0,
+                    metric_mode=metric_mode)
+    _report(on, off, metric_mode)
     return 0
 
 

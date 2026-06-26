@@ -24,20 +24,28 @@ class LoopResult:
     events: list[EvolutionEvent]
 
 
-def _metric(sig) -> float:
-    """라운드 성과 지표. 최적화 가능군 = occupancy/bw 우상향이 좋음.
-    여기선 occupancy 우선, 없으면 bw_pct. (낮은 latency가 진짜 목표지만
-    메트릭 곡선은 자원 활용도로 — spec §5 성공기준 a)."""
+def _metric(sig, mode: str = "occupancy") -> float:
+    """라운드 성과 지표. 항상 "높을수록 좋음" (best 비교 m>best 유지).
+
+    mode="occupancy"(기본, 기존 동작): occupancy 우선, 없으면 bw_pct = 자원활용도.
+    mode="latency": -latency_us 반환 = 더 빠른 커널일수록 큰 값(덜 음수). 성능 gain용.
+      latency_us=0(미측정)이면 -inf 처리 안 함 → 0 반환(중립). 음수화로 m>best 로직 무변.
+    """
+    if mode == "latency":
+        return -sig.latency_us if sig.latency_us > 0 else 0.0
     return sig.occupancy if sig.occupancy > 0 else sig.bw_pct
 
 
 def run_loop(problem: str, glue, ledger: Ledger, rules: list[Rule] | None = None,
-             max_rounds: int = 8, evolve_enabled: bool = True) -> LoopResult:
+             max_rounds: int = 8, evolve_enabled: bool = True,
+             metric_mode: str = "occupancy") -> LoopResult:
     # evolve_enabled=False = 정적 baseline (CUDAMaster류): 룰 고정, 진화 안 함.
     #   매치는 하되 success/fail 누적·retire 스킵 → 같은 룰 영원히 발화.
+    # metric_mode="latency"면 _metric이 -latency_us(음수) 반환 → best 초기 -inf 필요
+    #   (occupancy는 >=0이라 -1.0으로 첫 라운드 잡힘; latency 음수는 -1.0보다 작을 수 있음).
     rules = rules if rules is not None else seed_rules()
     all_events: list[EvolutionEvent] = []
-    best = -1.0
+    best = float("-inf") if metric_mode == "latency" else -1.0
     no_improve = 0
     prev_code = None
 
@@ -59,7 +67,7 @@ def run_loop(problem: str, glue, ledger: Ledger, rules: list[Rule] | None = None
 
         prof = glue.profile(gen.code, problem)
         sig = from_dict(prof.signal_dict)
-        m = _metric(sig)
+        m = _metric(sig, metric_mode)
         improved = m > best
         if improved:
             best = m; no_improve = 0
