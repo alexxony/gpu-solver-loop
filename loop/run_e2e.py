@@ -40,8 +40,14 @@ def git_sync(mb: Path) -> None:
     staged = g("diff", "--cached", "--quiet", check=False)
     if staged.returncode != 0:
         g("commit", "-q", "-m", "local: REQ/cleanup")
-    g("pull", "-q", "--rebase", "origin", BRANCH)
-    g("push", "-q", "origin", BRANCH)
+    # pull→push 사이 watch가 RES push하면 레이스(non-fast-forward) → 재시도.
+    # 매 시도: pull --rebase(remote 변경 흡수) 후 push. 최대 5회 (s2-231).
+    for attempt in range(5):
+        g("pull", "-q", "--rebase", "origin", BRANCH)
+        r = g("push", "-q", "origin", BRANCH, check=False)
+        if r.returncode == 0:
+            return
+    raise RuntimeError(f"git push 5회 재시도 실패:\n{r.stderr}")
 
 
 def main() -> int:
