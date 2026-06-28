@@ -154,8 +154,9 @@ def _profile_event(mod) -> dict:
 
 
 _KGROUP = [                                  # 커널명 패턴 → 그룹 (위→아래 우선)
-    ("matmul",      ("gemm", "matmul", "cutlass", "ampere_", "sgemm", "wgrad", "s16816", "h16816")),
+    # attention 먼저 — flash 커널명에 cutlass/gemm이 섞여(fmha_cutlassF) matmul로 오분류 방지
     ("attention",   ("attention", "flash", "fmha", "mha", "sdpa", "scaled_dot")),
+    ("matmul",      ("gemm", "matmul", "cutlass", "ampere_", "sgemm", "wgrad", "s16816", "h16816")),
     ("elementwise", ("elementwise", "vectorized", "silu", "mul", "add", "rmsnorm", "rope", "copy", "cast")),
     ("reduction",   ("reduce", "norm", "softmax", "sum")),
 ]
