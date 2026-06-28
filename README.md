@@ -40,7 +40,8 @@ The performance gain ("evolution → faster kernel") is **null across all 3 prob
 | llama | TF32 OFF vs ON | null — OFF=24320us, ON=24352us (1.00×) |
 
 Cause = **measurement environment (git-mailbox Colab) ≠ PoC.** llama 24ms = 17× the PoC's 1.4ms →
-matmul is not the bottleneck in this environment (SDPA flash dominates, presumed).
+matmul is not the bottleneck here. **Confirmed by ncu breakdown**: attention (flash) 54% > matmul 23%;
+a single flash-attention kernel dominates ~48% of total → matmul TF32 OFF/ON being a no-op is expected.
 **Not a loop defect = environment/problem selection limit.**
 
 ## What I did NOT prove
