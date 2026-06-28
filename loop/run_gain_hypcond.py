@@ -74,20 +74,28 @@ def main() -> int:
 
     seed_path = PROBLEMS / problem / "solve.py"
     vdir = PROBLEMS / problem / "variants"
-    tf32 = vdir / "R_tf32.py"
-    coal = vdir / "R_coalesced.py"
-    for p in (seed_path, tf32, coal):
-        if not p.exists():
-            print(f"ERR: 없음 {p}", file=sys.stderr); return 2
     if not (MAILBOX / ".git").exists():
         print(f"ERR: mailbox clone 없음 {MAILBOX}", file=sys.stderr); return 2
-
     seed_code = seed_path.read_text()
-    # 발화 룰 라벨 → 충실 variant. cherry-pick 아님: 각 룰 가설에 맞는 코드.
-    variant_map = {
-        "fp32_no_tensorcore": tf32.read_text(),   # matmul 없음 → null
-        "uncoalesced": coal.read_text(),           # load_eff=0 고침 → gain
-    }
+
+    if problem == "matmul":
+        # matmul = fp32_no_tensorcore가 맞는 룰: 발화 → TF32 켜면 진짜 6.4× gain.
+        # 루프가 측정→가설→재작성→더 빠른 커널 도달함을 ON curve 하강으로 입증.
+        tf32on = vdir / "R_tf32on.py"
+        if not tf32on.exists():
+            print(f"ERR: 없음 {tf32on}", file=sys.stderr); return 2
+        variant_map = {"fp32_no_tensorcore": tf32on.read_text()}
+    else:
+        tf32 = vdir / "R_tf32.py"
+        coal = vdir / "R_coalesced.py"
+        for p in (tf32, coal):
+            if not p.exists():
+                print(f"ERR: 없음 {p}", file=sys.stderr); return 2
+        # 발화 룰 라벨 → 충실 variant. cherry-pick 아님: 각 룰 가설에 맞는 코드.
+        variant_map = {
+            "fp32_no_tensorcore": tf32.read_text(),   # matmul 없음 → null
+            "uncoalesced": coal.read_text(),           # load_eff=0 고침 → gain
+        }
 
     print(f"성능 gain (가설-조건부) — {problem}, max_rounds={max_rounds}")
     print(f"  variant_map: {list(variant_map)} (seed=base)")
