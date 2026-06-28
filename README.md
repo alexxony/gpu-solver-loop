@@ -85,6 +85,8 @@ The git-mailbox pattern (this repo ↔ a separate `gpu-mailbox` repo) carries as
 JSON between a local runner and a Colab `watch` process — no SSH tunnel, deployable with a single
 repo-scope PAT.
 
+**Full setup (mailbox repo, Colab watch, PAT via Secrets): [`docs/SETUP.md`](docs/SETUP.md).**
+
 ## Reproducibility
 
 The gain-measurement infrastructure is ready — retry as-is once the environment is PoC-grade (1.4ms):
