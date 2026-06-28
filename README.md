@@ -54,6 +54,10 @@ ceilings (memory-bound); llama is attention-dominated — not a loop defect, a p
 - ❌ **Multi-problem generalization.** gain=matmul (1 problem), evolution=sigmoid (1 problem).
 - ⚠️ **Two axes, separated:** loop improves (gain ✅ matmul) + evolution beats static (✅ sigmoid) =
   each single-problem. Both-on-one + multi-problem generalization = future work.
+  - **Both-on-one confirmed structurally hard (by measurement).** A deliberately uncoalesced Triton matmul
+    was tried to get "wrong rule → retire → right rule → gain," but the seed rules fit so well the first
+    fired rule is always correct → no retire. Wrong-rule-fires-naturally = memory-bound (gain ceiling) vs
+    right-rule = compute (no retire) = mutually exclusive. The limit itself was established by measurement.
 
 ## Repository layout
 
