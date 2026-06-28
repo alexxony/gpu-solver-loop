@@ -153,6 +153,68 @@ def _profile_event(mod) -> dict:
     return {"latency_us": ms_per * 1000.0, "weight_pct": 1.0}
 
 
+_KGROUP = [                                  # 커널명 패턴 → 그룹 (위→아래 우선)
+    ("matmul",      ("gemm", "matmul", "cutlass", "ampere_", "sgemm", "wgrad", "s16816", "h16816")),
+    ("attention",   ("attention", "flash", "fmha", "mha", "sdpa", "scaled_dot")),
+    ("elementwise", ("elementwise", "vectorized", "silu", "mul", "add", "rmsnorm", "rope", "copy", "cast")),
+    ("reduction",   ("reduce", "norm", "softmax", "sum")),
+]
+
+
+def _classify_kernel(name: str) -> str:
+    low = name.lower()
+    for group, pats in _KGROUP:
+        if any(p in low for p in pats):
+            return group
+    return "other"
+
+
+def _ncu_breakdown(cmd: dict) -> dict:
+    """전체 forward를 ncu로 떠서 커널 그룹별 duration% 집계.
+
+    _profile_ncu와 달리 --launch-count 제한 없이 모든 커널의
+    gpu__time_duration.sum을 모아 matmul/attention/elementwise/... 로 분류·합산.
+    목적: matmul 비중이 작으면 'TF32 무효 = SDPA flash 지배' 확정 (gain 아닌 원인 규명).
+    """
+    rid = cmd.get("id", "?")
+    code = cmd["code"]
+    _, path = _load_solve_module(code)
+    ncu_cmd = [
+        "ncu", "--metrics", "gpu__time_duration.sum", "--csv",
+        "--target-processes", "all", "--print-kernel-base", "demangled",
+        "--", sys.executable, path, "--profile",
+    ]
+    try:
+        r = subprocess.run(ncu_cmd, capture_output=True, text=True, timeout=600)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return {"id": rid, "passed": False, "signal_dict": {}, "latency_us": 0.0,
+                "max_abs_err": 0.0, "error": f"ncu breakdown failed: {e}"}
+    if r.returncode != 0:
+        return {"id": rid, "passed": False, "signal_dict": {}, "latency_us": 0.0,
+                "max_abs_err": 0.0, "error": f"ncu rc={r.returncode}: {r.stderr[-400:]}"}
+    rows = _parse_ncu_csv(r.stdout)          # [{'Kernel Name','Metric Name','Metric Value'}]
+    groups: dict[str, float] = {}
+    per_kernel: dict[str, float] = {}
+    for row in rows:
+        if "duration" not in row.get("Metric Name", "").lower():
+            continue
+        kname = row.get("Kernel Name") or row.get("ID") or "?"
+        try:
+            dur = float(str(row.get("Metric Value", "0")).replace(",", ""))
+        except ValueError:
+            continue
+        g = _classify_kernel(kname)
+        groups[g] = groups.get(g, 0.0) + dur
+        per_kernel[kname[:60]] = per_kernel.get(kname[:60], 0.0) + dur
+    total = sum(groups.values()) or 1.0
+    pct = {g: round(100.0 * v / total, 2) for g, v in sorted(groups.items(), key=lambda x: -x[1])}
+    top = dict(sorted(per_kernel.items(), key=lambda x: -x[1])[:8])
+    return {"id": rid, "passed": True, "max_abs_err": 0.0, "latency_us": total,
+            "signal_dict": {"group_pct": pct, "total_ns": round(total, 1),
+                            "n_kernels": len(per_kernel), "top_kernels_ns": top},
+            "error": None}
+
+
 def execute_request(cmd: dict) -> dict:
     """REQ → RES. cmd['code'](전체 solve.py) → gate → 프로파일 → RES dict.
 
@@ -165,6 +227,8 @@ def execute_request(cmd: dict) -> dict:
     예외는 watch.process_pending이 잡아 _error_result로 → infra 실패와 구분.
     """
     rid = cmd.get("id", "?")
+    if cmd.get("kind") == "ncu_breakdown":   # 전체 forward 커널 그룹별 비중
+        return _ncu_breakdown(cmd)
     code = cmd["code"]
     mod, path = _load_solve_module(code)
 
