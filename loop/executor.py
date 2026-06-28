@@ -89,16 +89,18 @@ def _profile_ncu(code_path: str) -> dict | None:
     ncu --csv 출력을 signals.parse_ncu_rows로 정규화. 단일 모듈 가정 →
     weight_pct=1.0 (전체가 이 커널). 여러 커널이면 후속 harness가 합산.
     """
-    # --launch-count 1: 커널당 replay 1회 (측정: replay가 12분 주범, 6배↓ 5.7s).
-    #   메트릭 정밀도 약간↓(평균 표본 1)이나 PoC 충분. replay가 wall-clock 지배.
     # --: ncu 플래그 끝 표시 (s2-105: 없으면 --metrics를 실행파일로 오인).
+    # NOTE(2026-06-29): `--launch-count 1` 제거. 커널 1개만 떠서 matmul 등 다커널 워크로드서
+    #   엉뚱한 커널 latency 잡아 TF32 OFF/ON 7.2× 차이를 못 봄(95ms 동률 = 측정 버그). 이제 전체
+    #   커널 측정 → latency_us = 모든 gpu__time_duration.sum 합산(진짜 wall-clock 근사). 다커널이면
+    #   replay 느려지나 정확성 우선. 다른 신호는 parse_ncu_rows(대표 커널) 유지.
     cmd = [
         "ncu", "--metrics", NCU_METRICS, "--csv",
-        "--target-processes", "all", "--launch-count", "1",
+        "--target-processes", "all",
         "--", sys.executable, code_path, "--profile",
     ]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     if r.returncode != 0:
@@ -108,7 +110,17 @@ def _profile_ncu(code_path: str) -> dict | None:
         return None
     sig = signals.parse_ncu_rows(rows)
     d = {k: getattr(sig, k) for k in signals.Signal.__annotations__}
-    d["weight_pct"] = 1.0                # 단일 모듈 = 전체 비중
+    d["weight_pct"] = 1.0
+    # latency = 전체 커널 duration 합산 (parse_ncu_rows는 마지막 행만 → 다커널서 부정확)
+    total_dur = 0.0
+    for row in rows:
+        if "duration" in row.get("Metric Name", "").lower():
+            try:
+                total_dur += float(str(row.get("Metric Value", "0")).replace(",", ""))
+            except ValueError:
+                pass
+    if total_dur > 0:
+        d["latency_us"] = total_dur / 1000.0     # ns → us
     return d
 
 
