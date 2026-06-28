@@ -29,27 +29,31 @@ The ON/OFF above is not a demo. It is an **ablation that isolates which componen
 produces the effect.** The same variant queue was fed fairly to both tracks, so the difference
 is controlled to the single variable of evolution presence/absence.
 
-### 3. Negative result confirmed by measurement (integrity)
-
-The performance gain ("evolution → faster kernel") is **null across all 3 problems.** Nailed with data:
+### 3. The loop reaches a faster kernel by measurement — gain layer first breakthrough
 
 | Problem | Attempt | Result |
 |---|---|---|
-| sigmoid | `--latency` 12R, BLOCK variants | null — memory-bound ~770ms ±1% |
-| groupnorm | single-block · Welford 1-pass · split-parallel (3 algorithms) | null — ~36ms ±1%, DRAM BW ceiling |
-| llama | TF32 OFF vs ON | null — OFF=24320us, ON=24352us (1.00×) |
+| **matmul (4096² fp32)** | loop R0(fp32)→`fp32_no_tensorcore` fires→R1(TF32) | ✅ **9.6ms→1.5ms = 6.4× gain** |
+| sigmoid | `--latency` 12R, BLOCK variants | null — memory-bound ceiling (no headroom) |
+| groupnorm | split-parallel (3 algorithms) | null — DRAM BW ceiling |
+| llama | TF32 OFF vs ON | null — attention (flash) 54% dominates, matmul 23% not bottleneck |
 
-Cause = **measurement environment (git-mailbox Colab) ≠ PoC.** llama 24ms = 17× the PoC's 1.4ms →
-matmul is not the bottleneck here. **Confirmed by ncu breakdown**: attention (flash) 54% > matmul 23%;
-a single flash-attention kernel dominates ~48% of total → matmul TF32 OFF/ON being a no-op is expected.
-**Not a loop defect = environment/problem selection limit.**
+**matmul: the loop autonomously reached a 6.4×-faster kernel via measure→hypothesis→rewrite.** First
+demonstration of "measure → hypothesis → rewrite → faster kernel." sigmoid/groupnorm nulls are real
+ceilings (memory-bound); llama is attention-dominated — not a loop defect, a problem property.
+
+> ⚠️ **Measurement integrity:** matmul first read 95ms parity ("environment limit"), but the cause
+> was a bug — `_profile_ncu` measured only 1 kernel (`--launch-count 1`). Summing all-kernel durations
+> revealed the 6.4×, cross-checked by ncu kernel names (sgemm vs tensorop) and theoretical FLOP.
 
 ## What I did NOT prove
 
-- ❌ **Performance gain.** "Evolution produces a faster kernel" = 0 cases. The table above is the evidence.
-- ❌ **Multi-problem generalization.** The ON/OFF difference was observed on sigmoid only (1 problem).
-- ⚠️ **Mechanism ≠ gain.** *loop closes* (mechanism proven) ≠ *loop improves* (gain measured).
-  The latter is unmet.
+- ❌ **Evolution superiority ON>OFF.** On matmul the first fired rule is correct → no retire → ON≈OFF.
+  Evolution's benefit is shown separately by sigmoid's misfire-retire. The gain axis and evolution axis
+  are not demonstrated together on one problem.
+- ❌ **Multi-problem generalization.** gain=matmul (1 problem), evolution=sigmoid (1 problem).
+- ⚠️ **Two axes, separated:** loop improves (gain ✅ matmul) + evolution beats static (✅ sigmoid) =
+  each single-problem. Both-on-one + multi-problem generalization = future work.
 
 ## Repository layout
 
