@@ -9,7 +9,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
-from signals import Signal
+from signals import Signal, Context, DEFAULT_CTX
 
 SLOW_LATENCY_US = 50.0  # "느림" 임계 (PoC FFN mul 76μs 기준 근방). evolver가 조정 가능.
 WEIGHT_GATE = 0.05      # ≥5% 비중 게이트 (PoC R3': 커널 -39%였으나 비중 2.5%<5% → 전체 1%).
@@ -19,10 +19,14 @@ WEIGHT_GATE = 0.05      # ≥5% 비중 게이트 (PoC R3': 커널 -39%였으나 
 @dataclass
 class Rule:
     label: str                       # 병목 라벨
-    cond: Callable[[Signal], bool]   # 발화 조건
+    cond: Callable[[Signal], bool]   # 발화 조건 (신호만 — 환경 가드는 chip_cap이 분리)
     prompt: str                      # LLM에 줄 변형 가설 프롬프트
     rationale: str                   # 왜 이 신호→이 병목 (근거 1줄, 필수)
     priority: int                    # 낮을수록 먼저 (지배 병목 우선)
+    # 환경 가드 (design [[07-chip-lang-context-design]]): 이 룰이 요구하는 칩 capability.
+    # ""=칩 무관(항상 가능). "tf32"=TF32 있는 칩서만 발화 (T4/V100서 헛가설 차단).
+    # 신호 cond와 분리한 이유: lambda 11개 안 건드리고 가드를 선언적 1필드로 (회귀 0).
+    chip_cap: str = ""
     # evolver가 갱신하는 진화 상태
     success: int = 0
     fail: int = 0
@@ -60,6 +64,7 @@ def seed_rules() -> list[Rule]:
                    "fp32 sgemm은 텐서코어 미사용 (R5: matmul 52.7%→20.3%, 전체 1.71×).",
             rationale="fp32 GEMM = CUDA코어, 텐서코어 놀고있음 → TF32로 태우면 대폭↓",
             priority=1,
+            chip_cap="tf32",   # TF32 있는 칩(A100/H100)서만. T4/V100엔 TF32 없음 → 헛가설 차단.
         ),
         Rule(
             label="tensorcore_saturated",
@@ -68,6 +73,7 @@ def seed_rules() -> list[Rule]:
                    "정확성만 악화 (R6 반증: TF32 0.853 vs bf16 0.850, 동률).",
             rationale="A100 TF32 throughput ≈ bf16 (같은 TC 파이프) → 저정밀 무효",
             priority=1,
+            chip_cap="tf32",   # "TF32≈bf16" 근거가 TF32 칩 전제. 비-TF32 칩선 이 STOP 부적용.
         ),
         # ── priority 2: 융합 (게이트 통과한 메모리바운드만, 약 이득 R3') ──
         Rule(
@@ -134,13 +140,19 @@ class Hypothesis:
     is_stop: bool = False   # STOP 판정인가 (포화군)
 
 
-def match(sig: Signal, rules: list[Rule]) -> Hypothesis | None:
+def match(sig: Signal, rules: list[Rule], ctx: Context | None = None) -> Hypothesis | None:
     """가장 지배적 병목 1개 선택 (spec §3.2: 우선순위 → 신뢰도).
 
     탐색-활용: 같은 priority면 confidence 높은 룰 우선 (evolver 신뢰도 반영).
     retired 룰은 건너뜀.
+
+    ctx (design [[07-chip-lang-context-design]]): 환경 가드. None=DEFAULT_CTX(칩 미지=모두 통과,
+    종전 A100 동작 보존). 룰의 chip_cap이 비고 그 칩이 능력 없으면 발화 차단 (T4서 TF32 룰 등).
+    cond(신호)와 chip_cap(환경)을 AND — 신호 맞아도 칩이 못 하면 헛가설이라 끔.
     """
-    live = [(i, r) for i, r in enumerate(rules) if not r.retired and r.cond(sig)]
+    ctx = ctx or DEFAULT_CTX
+    live = [(i, r) for i, r in enumerate(rules)
+            if not r.retired and ctx.cap(r.chip_cap) and r.cond(sig)]
     if not live:
         return None
     # priority 오름차순, 동률이면 confidence 내림차순
@@ -205,5 +217,30 @@ if __name__ == "__main__":
     h = match(from_dict({"op_weight": 0.2, "op_name": "aten::sdpa",
                          "weight_pct": 0.0, "load_eff": 0.9, "latency_us": 10.0}), rules)
     assert h is None, h
+
+    # ── self-check 9~12: 칩 컨텍스트 가드 (design 07) ──
+    from signals import Context
+    # fp32 matmul 신호 (self-check 2와 동일). 칩별로 발화가 갈려야 함.
+    fp32_sig = {"weight_pct": 0.527, "compute_tput": 0.8,
+                "tensorcore_active": False, "latency_us": 100.0}
+    # 9: ctx 없음(=A100 가정) → 종전대로 fp32_no_tensorcore (회귀 0)
+    h = match(from_dict(fp32_sig), seed_rules())
+    assert h is not None and h.label == "fp32_no_tensorcore", h
+    # 10: A100 명시 → 동일 (TF32 있음)
+    h = match(from_dict(fp32_sig), seed_rules(), Context(chip="a100"))
+    assert h is not None and h.label == "fp32_no_tensorcore", h
+    # 11: T4 → TF32 없음 → fp32_no_tensorcore 차단. 같은 신호서 다음 적격 룰로 떨어짐.
+    #     (memory_bound_fusable는 bw_pct>0.5 필요 — 여기선 없으니 None or 타 룰)
+    h = match(from_dict(fp32_sig), seed_rules(), Context(chip="t4"))
+    assert h is None or h.label != "fp32_no_tensorcore", h
+    # 12: T4 + 메모리바운드 신호 → fp32 룰 막히고 memory_bound_fusable 발화 (진화 흡수 경로)
+    h = match(from_dict({"weight_pct": 0.2, "bw_pct": 0.7, "compute_tput": 0.0,
+                         "tensorcore_active": False, "latency_us": 50.0}),
+              seed_rules(), Context(chip="t4"))
+    assert h is not None and h.label == "memory_bound_fusable", h
+    # 13: tensorcore_saturated도 T4선 STOP 부적용 (TF32≈bf16 근거가 TF32 칩 전제)
+    h = match(from_dict({"weight_pct": 0.49, "tensorcore_active": True,
+                         "latency_us": 100.0}), seed_rules(), Context(chip="t4"))
+    assert h is None or h.label != "tensorcore_saturated", h
 
     print("rules.py self-check PASS")

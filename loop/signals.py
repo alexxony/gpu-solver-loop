@@ -145,6 +145,64 @@ def from_dict(d: dict) -> Signal:
     return Signal(**{k: v for k, v in d.items() if k in Signal.__annotations__})
 
 
+# ── 환경 컨텍스트 (측정 아닌 사전 사실) — design [[07-chip-lang-context-design]] ──
+# Signal=사후 측정 vs Context=사전 환경. 칩 TF32 가능여부는 신호로 안 나옴 → 1급 필요.
+# 황금규칙: 사용자/탐지가 Context(무대)만 채움, 최적 룰은 측정→진화가 발견 (룰 손수정 금지).
+
+# 칩 → capability: NVIDIA 공개 스펙, 사람이 1회 박음 (고정 사실, 추론 아님).
+CHIP_CAPS = {
+    "a100": {"tf32": True,  "tc_gen": 3, "bf16": True},
+    "h100": {"tf32": True,  "tc_gen": 4, "bf16": True, "fp8": True},
+    "t4":   {"tf32": False, "tc_gen": 1, "bf16": False},  # Turing — TF32 없음
+    "v100": {"tf32": False, "tc_gen": 1, "bf16": False},  # Volta — fp16 TC만
+}
+
+
+@dataclass
+class Context:
+    """측정 아닌 환경 (커널 실행 *전* 이미 앎). 룰이 cond 가드로 *읽음*.
+
+    chip = nvidia-smi/torch.cuda.get_device_capability 자동탐지 가능.
+    lang = 1급 아님 (Mojo 환경 0·파일단위 입도 불일치). 문법 차이는 측정 신호가 흡수
+           (Triton tl.dot TF32 자동 → tensorcore_active=True로 관측). 기록용으로만 보관.
+    """
+    chip: str = ""    # "a100" | "h100" | "t4" | "v100"  (빈값 = 미지 = 가드 통과)
+    lang: str = ""    # "triton" | "cuda" | "mojo" | "torch"  (서술/기록용)
+
+    def cap(self, key: str) -> bool:
+        """룰의 chip_cap 요구를 이 칩이 만족하나. 통과=True.
+
+        - key="" (칩 무관 룰): 항상 True (가드 없음).
+        - 칩 미지/미등록: True (보수적 통과 = 현 A100 동작 보존, 회귀 0).
+        - 칩 명시 + 그 칩이 능력 없음: False (헛가설 차단 — T4서 TF32 룰 등).
+        """
+        if not key:
+            return True  # 가드 없는 룰 = 항상 통과
+        if not self.chip or self.chip not in CHIP_CAPS:
+            return True  # 미지 칩 = 보수적으로 통과 (회귀 0)
+        return bool(CHIP_CAPS[self.chip].get(key, False))
+
+
+# 칩 미지 기본 컨텍스트 = 모든 가드 통과 = 종전 동작. match(ctx=None)이 이걸 씀.
+DEFAULT_CTX = Context()
+
+
+def detect_chip(cc: tuple[int, int] | None = None, name: str = "") -> str:
+    """compute capability 튜플 or 디바이스명 → 칩 키. watch가 채워 Context 생성.
+
+    cc 예: (8,0)=A100, (9,0)=H100, (7,5)=T4, (7,0)=V100.
+    GPU 없는 로컬선 호출 안 됨 — Colab watch가 torch.cuda로 채움.
+    """
+    CC_MAP = {(8, 0): "a100", (9, 0): "h100", (7, 5): "t4", (7, 0): "v100"}
+    if cc and cc in CC_MAP:
+        return CC_MAP[cc]
+    n = name.lower()
+    for key in CHIP_CAPS:
+        if key in n:
+            return key
+    return ""  # 미지 = 가드 통과
+
+
 if __name__ == "__main__":
     # self-check: ncu 행 파싱 + pct 정규화
     rows = [
@@ -192,4 +250,17 @@ if __name__ == "__main__":
     assert merged.bw_pct == 0.83          # ncu 신호 보존
     assert abs(merged.weight_pct - 0.9) < 1e-9   # nsys 주입
     assert merged.op_name == "aten::mm"   # torch 주입
+
+    # Context: 칩 미지 → 모든 cap 통과 (회귀 0). A100 → tf32 True. T4 → tf32 False.
+    assert Context().cap("tf32") is True            # 빈 칩 = 통과
+    assert Context(chip="zzz").cap("tf32") is True   # 미등록 칩 = 통과
+    assert Context(chip="a100").cap("tf32") is True
+    assert Context(chip="t4").cap("tf32") is False   # Turing = TF32 없음
+    assert Context(chip="v100").cap("bf16") is False
+    assert DEFAULT_CTX.cap("tf32") is True
+    # detect_chip: cc 튜플 우선, 없으면 이름 매칭
+    assert detect_chip((8, 0)) == "a100"
+    assert detect_chip((7, 5)) == "t4"
+    assert detect_chip(None, "NVIDIA A100-SXM4-40GB") == "a100"
+    assert detect_chip((6, 1)) == ""                 # 미지 cc = 빈값
     print("signals.py self-check PASS")
