@@ -79,12 +79,33 @@ def seed_rules() -> list[Rule]:
             rationale="메모리바운드 = HBM 왕복 천장 → 융합으로 중간텐서 왕복 제거",
             priority=2,
         ),
+        # ── priority 2: launch 오버헤드 (nsys 타임라인 신호 — ncu per-kernel론 안 보임) ──
+        Rule(
+            label="launch_overhead",
+            cond=lambda t: t.launch_gap_pct > 0.3 and 0 < t.weight_pct < 0.5,
+            prompt="GPU idle 큼(커널 간 gap) + 단일 지배커널 없음 → 작은 커널 다수. "
+                   "CUDA graph 캡처 또는 elementwise 융합으로 launch 횟수↓.",
+            rationale="nsys: GPU idle>30% & 지배커널 없음 = launch/CPU 바운드 (ncu per-kernel론 안 보임)",
+            priority=2,
+        ),
         # ── priority 3+: 일반 CUDA 룰 (다른 워크로드/커널 대비, 보존) ──
         Rule(
             label="memory_saturated",
             cond=lambda t: t.bw_pct > 0.8,
             prompt="STOP: 대역폭 포화, 손댈 것 없음",
             rationale="elementwise는 BW가 천장 (NVIDIA roofline: AI<ridge → mem bound)",
+            priority=3,
+        ),
+        # torch profiler 신호 — 연산자 의미 귀속 (ncu 커널명 수작업 분류 대체).
+        # attention 지배인데 다른 커널 손대면 헛수고 (llama: attention 54%>matmul 23% 교훈).
+        Rule(
+            label="attention_dominant",
+            cond=lambda t: t.op_weight > 0.4
+            and ("attention" in t.op_name.lower() or "sdpa" in t.op_name.lower()
+                 or "fmha" in t.op_name.lower()),
+            prompt="attention이 지배 연산자(>40%). flash/SDPA 백엔드 확인 — fp32 폴백이면 "
+                   "bf16 flash로. matmul/TF32 튜닝은 비병목이라 무효.",
+            rationale="torch op 귀속: attention self-time>40% = 여기가 병목, 타 커널 손대도 헛수고",
             priority=3,
         ),
         Rule(
@@ -167,6 +188,22 @@ if __name__ == "__main__":
     # self-check 5: 아무 룰도 안 맞으면 None (작은 비중 0, 정상)
     h = match(from_dict({"weight_pct": 0.0, "bw_pct": 0.5, "load_eff": 0.9,
                          "occupancy": 0.9, "latency_us": 10.0}), rules)
+    assert h is None, h
+
+    # self-check 6 (a, nsys): GPU idle 큼 + 지배커널 없음 → launch_overhead
+    # load_eff 기본 0.0이라 uncoalesced(p4)도 발화하나 launch_overhead(p2) 우선.
+    h = match(from_dict({"launch_gap_pct": 0.4, "weight_pct": 0.2,
+                         "load_eff": 0.9, "latency_us": 30.0}), rules)
+    assert h is not None and h.label == "launch_overhead", h
+
+    # self-check 7 (a, torch): attention 지배 → attention_dominant
+    h = match(from_dict({"op_weight": 0.54, "op_name": "aten::scaled_dot_product_attention",
+                         "weight_pct": 0.0, "latency_us": 100.0}), rules)
+    assert h is not None and h.label == "attention_dominant", h
+
+    # self-check 8 (a 가드): attention op지만 비중<40% → 발화 안 함 (오발화 방지)
+    h = match(from_dict({"op_weight": 0.2, "op_name": "aten::sdpa",
+                         "weight_pct": 0.0, "load_eff": 0.9, "latency_us": 10.0}), rules)
     assert h is None, h
 
     print("rules.py self-check PASS")
