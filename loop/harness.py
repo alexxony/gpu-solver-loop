@@ -12,7 +12,9 @@ from ledger import Ledger, RoundRecord
 from evolver import evolve, EvolutionEvent
 from glue import Generator, Gate, Profiler, code_hash
 
-CONVERGE_PATIENCE = 3   # N라운드 연속 미개선 → 종료
+CONVERGE_PATIENCE = 6   # N라운드 연속 미개선 → 종료.
+# 6 = RETIRE_AFTER_FAILS(3)+여유. retire 조건(fail>=3 & conf<=0.25 & n>=4) 채울
+# 4R+ 확보해 수렴이 retire보다 먼저 터지는 것 방지 (T4 reg_pressure retire 관찰용).
 
 
 @dataclass
@@ -136,17 +138,15 @@ if __name__ == "__main__":
     # ── 시나리오 B: 최적화 가능군 → 메트릭 우상향 후 수렴 ──
     fd, p = tempfile.mkstemp(suffix=".jsonl"); os.close(fd); os.unlink(p)
     try:
-        # occupancy 0.3→0.5→0.7 상승 후 정체(0.7,0.7,0.7) → converged
+        # occupancy 0.3→0.5→0.7 상승 후 정체 → converged.
+        # 정체 구간 = CONVERGE_PATIENCE(6)만큼 필요. max_rounds 충분히 키움.
+        plateau = ({"occupancy": 0.7, "bw_pct": 0.6, "load_eff": 0.7, "latency_us": 50}, 50, True)
         script = [
             ({"occupancy": 0.3, "bw_pct": 0.4, "load_eff": 0.55, "latency_us": 76}, 76, True),
             ({"occupancy": 0.5, "bw_pct": 0.5, "load_eff": 0.6, "latency_us": 60}, 60, True),
-            ({"occupancy": 0.7, "bw_pct": 0.6, "load_eff": 0.7, "latency_us": 50}, 50, True),
-            ({"occupancy": 0.7, "bw_pct": 0.6, "load_eff": 0.7, "latency_us": 50}, 50, True),
-            ({"occupancy": 0.7, "bw_pct": 0.6, "load_eff": 0.7, "latency_us": 50}, 50, True),
-            ({"occupancy": 0.7, "bw_pct": 0.6, "load_eff": 0.7, "latency_us": 50}, 50, True),
-        ]
+        ] + [plateau] * 7
         led = Ledger(p)
-        res = run_loop("matmul", glue=FakeGlue(script), ledger=led, max_rounds=8)
+        res = run_loop("matmul", glue=FakeGlue(script), ledger=led, max_rounds=12)
         assert res.stopped_reason == "converged", res.stopped_reason
         curve = led.metric_curve("matmul")
         metrics = [m for _, m in curve]
