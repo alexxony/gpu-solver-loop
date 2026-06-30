@@ -57,12 +57,47 @@ def execute_request(cmd: dict) -> dict:
 
     실구현 흐름(executor): cmd['code'](전체 solve.py) → _reference 교차검증 gate →
     ncu 프로파일(or Event fallback) → signal_dict. 반환 = RES 스키마.
+
+    cmd['raw_script'] 있으면 = 임의 파이썬을 subprocess 실행(executor 우회).
+    새 측정 로직을 REQ에 데이터로 실어 보냄 → executor/watch 코드 안 고쳐
+    Colab 재시작 영원 불요 (sys.modules 캐시 회피). PROGRESS 운용교훈의 근본해결.
     """
+    if "raw_script" in cmd:
+        return _run_raw_script(cmd)
     try:
         from . import executor
     except ImportError:
         import executor                  # Colab !python 직접 실행 대비
     return executor.execute_request(cmd)
+
+
+def _run_raw_script(cmd: dict) -> dict:
+    """cmd['raw_script'](파이썬 소스)를 subprocess 실행 → stdout 마지막 JSON 줄을 RES로.
+
+    스크립트는 마지막 줄에 RES 스키마 dict를 한 줄 JSON으로 print해야 함.
+    timeout·비영종료·JSON파싱실패는 _error_result로 격리(라운드 스킵, watch 생존).
+    """
+    rid = cmd.get("id", "raw")
+    try:
+        proc = subprocess.run(
+            ["python3", "-c", cmd["raw_script"]],
+            capture_output=True, text=True,
+            timeout=cmd.get("timeout_s", 600),
+        )
+    except subprocess.TimeoutExpired:
+        return _error_result(rid, "raw_script timeout")
+    if proc.returncode != 0:
+        return _error_result(rid, f"raw_script exit {proc.returncode}\n{proc.stderr[-2000:]}")
+    # stdout 마지막 비공백 줄 = RES JSON (스크립트 진단 print 허용)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+    if not lines:
+        return _error_result(rid, f"raw_script no output\n{proc.stderr[-2000:]}")
+    try:
+        res = json.loads(lines[-1])
+    except json.JSONDecodeError as e:
+        return _error_result(rid, f"raw_script bad JSON: {e}\nlast={lines[-1][:500]}")
+    res.setdefault("id", rid)
+    return res
 
 
 def _error_result(rid: str, err: str) -> dict:
@@ -183,6 +218,19 @@ def _selfcheck() -> None:
         assert (mb2 / "result" / "RES-x.json").exists()
         rx = _read_json(mb2 / "result" / "RES-x.json")
         assert rx["passed"] is False and "NotImplementedError" in rx["error"]
+
+    # raw_script 분기: executor 우회, subprocess stdout 마지막 JSON 줄 = RES
+    ok = execute_request({"id": "r1", "raw_script":
+        "print('진단 로그 무시됨'); import json; "
+        "print(json.dumps({'passed': True, 'latency_us': 42.0, 'signal_dict': {'occupancy': 0.7}}))"})
+    assert ok["passed"] and ok["latency_us"] == 42.0 and ok["id"] == "r1", ok
+    assert ok["signal_dict"]["occupancy"] == 0.7
+    # 비영 종료 → _error_result 격리
+    bad = execute_request({"id": "r2", "raw_script": "import sys; sys.exit(3)"})
+    assert bad["passed"] is False and "exit 3" in bad["error"], bad
+    # JSON 없는 출력 → bad JSON 격리
+    nj = execute_request({"id": "r3", "raw_script": "print('not json')"})
+    assert nj["passed"] is False and "bad JSON" in nj["error"], nj
 
     print("watch.py self-check PASS")
 
