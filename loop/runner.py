@@ -86,6 +86,7 @@ def run_problem(
     evolve_enabled: bool = True,
     generator=None,
     metric_mode: str = "occupancy",
+    ctx=None,
 ) -> LoopResult:
     """한 문제를 자동 루프에 태운다 — 우편함 경유 측정 + 룰 진화.
 
@@ -103,7 +104,7 @@ def run_problem(
     glue = MailboxGlue(gen, profiler)
     ledger = Ledger(str(ledger_path))
     return run_loop(problem, glue, ledger, max_rounds=max_rounds, rules=rules,
-                    evolve_enabled=evolve_enabled, metric_mode=metric_mode)
+                    evolve_enabled=evolve_enabled, metric_mode=metric_mode, ctx=ctx)
 
 
 if __name__ == "__main__":

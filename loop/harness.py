@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from signals import from_dict
+from signals import from_dict, Context
 from rules import seed_rules, match, Rule
 from ledger import Ledger, RoundRecord
 from evolver import evolve, EvolutionEvent
@@ -38,7 +38,10 @@ def _metric(sig, mode: str = "occupancy") -> float:
 
 def run_loop(problem: str, glue, ledger: Ledger, rules: list[Rule] | None = None,
              max_rounds: int = 8, evolve_enabled: bool = True,
-             metric_mode: str = "occupancy") -> LoopResult:
+             metric_mode: str = "occupancy",
+             ctx: Context | None = None) -> LoopResult:
+    # ctx (design 07): 환경 가드. None=칩 미지=모든 가드 통과(종전 A100 동작 보존).
+    #   T4 등 명시 시 match가 chip_cap 가드로 헛가설 차단 → 진화가 흡수.
     # evolve_enabled=False = 정적 baseline (CUDAMaster류): 룰 고정, 진화 안 함.
     #   매치는 하되 success/fail 누적·retire 스킵 → 같은 룰 영원히 발화.
     # metric_mode="latency"면 _metric이 -latency_us(음수) 반환 → best 초기 -inf 필요
@@ -74,8 +77,8 @@ def run_loop(problem: str, glue, ledger: Ledger, rules: list[Rule] | None = None
         else:
             no_improve += 1
 
-        # Hypothesis Engine: 다음 라운드용 가설 (현재 신호 기반)
-        h = match(sig, rules)
+        # Hypothesis Engine: 다음 라운드용 가설 (현재 신호 + 환경 가드)
+        h = match(sig, rules, ctx)
         rule_idx = h.rule_idx if h else -1
 
         rec = RoundRecord(

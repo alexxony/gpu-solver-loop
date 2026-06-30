@@ -35,6 +35,7 @@ from runner import run_problem
 from ledger import Ledger
 from rules import seed_rules
 from generator import CallbackGenerator
+from signals import Context
 
 
 @dataclass
@@ -69,8 +70,8 @@ def _make_queued_callback(variant_codes: list[str], seed_code: str):
 def _run_track(label: str, problem: str, seed_code: str, variant_codes: list[str],
                mailbox_dir, ledger_path, sync_fn, max_rounds: int,
                evolve_enabled: bool, poll_s: float, timeout_s: float,
-               metric_mode: str = "occupancy") -> TrackResult:
-    """한 트랙 실행 — 같은 variant 큐, evolve_enabled만 다름."""
+               metric_mode: str = "occupancy", ctx=None) -> TrackResult:
+    """한 트랙 실행 — 같은 variant 큐, evolve_enabled만 다름. ctx=칩 환경 가드."""
     if Path(ledger_path).exists():
         Path(ledger_path).unlink()
     rules = seed_rules()                  # 트랙마다 새 룰판 (오염 방지)
@@ -81,7 +82,7 @@ def _run_track(label: str, problem: str, seed_code: str, variant_codes: list[str
     res = run_problem(problem, seed_code, mailbox_dir, ledger_path,
                       sync_fn=sync_fn, max_rounds=max_rounds, poll_s=poll_s,
                       timeout_s=timeout_s, rules=rules, generator=gen,
-                      evolve_enabled=evolve_enabled, metric_mode=metric_mode)
+                      evolve_enabled=evolve_enabled, metric_mode=metric_mode, ctx=ctx)
 
     led = Ledger(str(ledger_path))
     recs = [r for r in led.records if r.problem == problem]
@@ -158,12 +159,18 @@ def main() -> int:
 
     # --latency 플래그 = 성능 gain 모드 (metric=latency_us, 낮을수록 좋음).
     #   기본(플래그 없음) = occupancy 모드 (기존 동작).
-    argv = [a for a in sys.argv[1:] if a != "--latency"]
+    # --chip=<key> = 칩 환경 가드 (design 07). 미지정 시 칩 미지 = 모든 가드 통과(종전).
+    #   T4 명시 시 TF32 룰 차단 → 진화가 흡수하는지 실측. cmd가 자동탐지 라우팅 없어
+    #   사용자가 런타임 칩을 명시 (Colab T4/A100 선택과 일치).
+    chip = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--chip=")), "")
+    argv = [a for a in sys.argv[1:]
+            if a != "--latency" and not a.startswith("--chip=")]
     metric_mode = "latency" if "--latency" in sys.argv else "occupancy"
+    ctx = Context(chip=chip)
 
     if len(argv) < 2:
-        print("usage: python run_gain_compare.py <problem> <variants_dir> [max_rounds] [--latency]",
-              file=sys.stderr)
+        print("usage: python run_gain_compare.py <problem> <variants_dir> [max_rounds] "
+              "[--latency] [--chip=t4|a100|h100|v100]", file=sys.stderr)
         print("       python run_gain_compare.py --selfcheck", file=sys.stderr)
         return 2
 
@@ -195,18 +202,18 @@ def main() -> int:
     seed_code = seed_path.read_text()
 
     print(f"gain 비교 — {problem}, variants={[f.name for f in variant_files]} "
-          f"max_rounds={max_rounds}")
+          f"max_rounds={max_rounds} chip={chip or '미지(가드통과)'}")
     print(f"  같은 variant 큐를 ON/OFF 두 트랙에 주입 (공정 비교).\n")
 
     led_base = MAILBOX.parent / "gain-compare"
     off = _run_track("evolve_OFF", problem, seed_code, variant_codes,
                      MAILBOX, f"{led_base}-off.jsonl", git_sync, max_rounds,
                      evolve_enabled=False, poll_s=5.0, timeout_s=900.0,
-                     metric_mode=metric_mode)
+                     metric_mode=metric_mode, ctx=ctx)
     on = _run_track("evolve_ON", problem, seed_code, variant_codes,
                     MAILBOX, f"{led_base}-on.jsonl", git_sync, max_rounds,
                     evolve_enabled=True, poll_s=5.0, timeout_s=900.0,
-                    metric_mode=metric_mode)
+                    metric_mode=metric_mode, ctx=ctx)
     _report(on, off, metric_mode)
     return 0
 
