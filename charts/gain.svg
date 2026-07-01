@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 340" font-family="system-ui, -apple-system, Segoe UI, sans-serif">
+  <rect width="520" height="340" fill="#ffffff"/>
+  <text x="260" y="28" text-anchor="middle" font-size="17" font-weight="700" fill="#1a1a1a">matmul 4096² — measure → hypothesize → rewrite → faster kernel</text>
+  <text x="260" y="48" text-anchor="middle" font-size="12" fill="#666">A100 · fp32 → TF32 텐서코어 전환 / TF32 tensor-core switch</text>
+
+  <!-- axes -->
+  <line x1="80" y1="270" x2="480" y2="270" stroke="#ccc" stroke-width="1"/>
+  <text x="70" y="274" text-anchor="end" font-size="10" fill="#999">0</text>
+  <text x="70" y="120" text-anchor="end" font-size="10" fill="#999">9.6</text>
+  <text x="60" y="200" text-anchor="middle" font-size="10" fill="#999" transform="rotate(-90 60 200)">latency (ms)</text>
+
+  <!-- before bar: fp32 9.6ms (scaled: 9.6ms -> height 154, top at y=116) -->
+  <rect x="140" y="116" width="90" height="154" fill="#e06666" rx="3"/>
+  <text x="185" y="108" text-anchor="middle" font-size="15" font-weight="700" fill="#cc0000">9.6 ms</text>
+  <text x="185" y="290" text-anchor="middle" font-size="12" font-weight="600" fill="#333">fp32 (before)</text>
+  <text x="185" y="306" text-anchor="middle" font-size="10" fill="#888">ampere_sgemm</text>
+
+  <!-- after bar: TF32 1.5ms (scaled: 1.5/9.6*154 = 24, top at y=246) -->
+  <rect x="330" y="246" width="90" height="24" fill="#6aa84f" rx="3"/>
+  <text x="375" y="238" text-anchor="middle" font-size="15" font-weight="700" fill="#38761d">1.5 ms</text>
+  <text x="375" y="290" text-anchor="middle" font-size="12" font-weight="600" fill="#333">TF32 (after)</text>
+  <text x="375" y="306" text-anchor="middle" font-size="10" fill="#888">cutlass_tensorop</text>
+
+  <!-- speedup arrow -->
+  <path d="M 235 150 Q 285 130 325 250" fill="none" stroke="#f1c232" stroke-width="2.5" marker-end="url(#arr)"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#f1c232"/>
+    </marker>
+  </defs>
+  <rect x="248" y="158" width="66" height="26" rx="13" fill="#fff3cc" stroke="#f1c232"/>
+  <text x="281" y="176" text-anchor="middle" font-size="15" font-weight="800" fill="#bf9000">6.4×</text>
+
+  <text x="260" y="330" text-anchor="middle" font-size="11" fill="#555">6.4× 가속 / 6.4× speedup — different kernel selected, not a flag tweak (sgemm ≠ tensorop)</text>
+</svg>

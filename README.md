@@ -2,8 +2,8 @@
 
 An agentic GPU kernel-optimization loop where an **LLM agent evolves its own classification
 rules from profiling measurements**. The evolution mechanism is proven with a controlled
-ON/OFF ablation on real A100 hardware. Performance gain was measured to be null and attributed
-to an environment limit — stated honestly as future work.
+ON/OFF ablation on real A100 hardware. Performance gain is demonstrated on a compute-bound
+matmul (6.4×, A100); multi-problem generalization is stated honestly as future work.
 
 > This README is the methodology narrative. For internals see [`loop/README.md`](loop/README.md).
 
@@ -102,6 +102,8 @@ is controlled to the single variable of evolution presence/absence.
 demonstration of "measure → hypothesis → rewrite → faster kernel." sigmoid/groupnorm nulls are real
 ceilings (memory-bound); llama is attention-dominated — not a loop defect, a problem property.
 
+<p align="center"><img src="charts/gain.svg" alt="matmul fp32 9.6ms → TF32 1.5ms = 6.4× speedup" width="520"/></p>
+
 > ⚠️ **Measurement integrity:** matmul first read 95ms parity ("environment limit"), but the cause
 > was a bug — `_profile_ncu` measured only 1 kernel (`--launch-count 1`). Summing all-kernel durations
 > revealed the 6.4×, cross-checked by ncu kernel names (sgemm vs tensorop) and theoretical FLOP.
@@ -115,6 +117,11 @@ ceilings (memory-bound); llama is attention-dominated — not a loop defect, a p
 - ⚠️ **Two axes, separated:** loop improves (gain ✅ matmul) + evolution beats static (✅ sigmoid, and
   retire re-observed on T4 = ON retire 1 vs OFF 0) = each single-problem. Both-on-one + multi-problem
   generalization = future work. (T4 retire shows the *mechanism* across a 2nd chip, not gain superiority.)
+
+<p align="center"><img src="charts/retire.svg" alt="evolution ON retires the false rule at round 4 (retire=1); OFF never retires (retire=0); latency flat on both" width="560"/></p>
+
+> The difference is the **retire**, not the latency — both tracks stay flat at the T4 fp32 ceiling.
+> This "a rule gets dropped by measurement" step is exactly what static-rule prior art cannot do.
   - **Both-on-one confirmed structurally hard (by measurement).** A deliberately uncoalesced Triton matmul
     was tried to get "wrong rule → retire → right rule → gain," but the seed rules fit so well the first
     fired rule is always correct → no retire. Wrong-rule-fires-naturally = memory-bound (gain ceiling) vs
