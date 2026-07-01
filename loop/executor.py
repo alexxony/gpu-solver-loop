@@ -138,6 +138,22 @@ def _parse_ncu_csv(stdout: str) -> list[dict]:
     return [row for row in reader if row.get("Metric Name")]
 
 
+def _detect_chip_now() -> str:
+    """실행 중인 GPU → 칩 키. torch.cuda로 cc·이름 뽑아 signals.detect_chip.
+
+    watch/executor가 RES에 실어 드라이버가 --chip 없이 Context 자동 채움(design 07 §미완).
+    GPU/torch 부재(로컬 self-check)면 "" = 가드 통과(회귀 0).
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return ""
+        cc = torch.cuda.get_device_capability()
+        return signals.detect_chip(cc, torch.cuda.get_device_name())
+    except Exception:
+        return ""
+
+
 def _profile_event(mod) -> dict:
     """ncu fallback — torch.cuda.Event로 latency만. signal_dict 축소.
 
@@ -256,7 +272,8 @@ def execute_request(cmd: dict) -> dict:
         sig = _profile_event(mod)
     latency = sig.get("latency_us", 0.0)
     return {"id": rid, "passed": True, "max_abs_err": max_err,
-            "signal_dict": sig, "latency_us": latency, "error": None}
+            "signal_dict": sig, "latency_us": latency,
+            "chip": _detect_chip_now(), "error": None}
 
 
 if __name__ == "__main__":

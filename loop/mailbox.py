@@ -82,6 +82,20 @@ class MailboxProfiler:
         res = self._await_result(rid)            # poll until RES
         return self._parse(res)
 
+    def submit_raw(self, raw_script: str, timeout_s: float | None = None) -> dict:
+        """raw_script REQ 왕복 → 원본 RES dict. 칩 자동탐지 canary 등 임의 측정용.
+
+        watch._run_raw_script 분기가 실행 → stdout 마지막 JSON 줄이 RES.
+        _parse(code/gate 스키마) 우회 = 임의 필드(chip 등) 그대로 반환.
+        """
+        rid = self.id_fn()
+        req = {"id": rid, "raw_script": raw_script}
+        if timeout_s is not None:
+            req["timeout_s"] = timeout_s
+        _write_json(self.mb / "cmd" / f"REQ-{rid}.json", req)
+        self.sync(self.mb)
+        return self._await_result(rid)
+
     def _await_result(self, rid: str) -> dict:
         res_path = self.mb / "result" / f"RES-{rid}.json"
         deadline = self.now() + self.timeout_s
@@ -172,6 +186,24 @@ if __name__ == "__main__":
         import glob, os
         assert len(glob.glob(os.path.join(d, "result", "RES-*.json"))) == 1  # fixedid 덮어씀
         assert len(glob.glob(os.path.join(d, "done", "*"))) == 1
+
+    # submit_raw: raw_script REQ 왕복 → 원본 RES dict(임의 필드 그대로). 칩 canary용.
+    with tempfile.TemporaryDirectory() as d2:
+        def raw_responder(cmd: dict) -> dict:
+            # watch._run_raw_script 대역 — raw_script 있으면 chip 실은 RES 반환.
+            assert "raw_script" in cmd and "code" not in cmd
+            return {"passed": True, "latency_us": 1.0, "chip": "a100"}
+
+        def raw_sync(_mb):
+            fake_colab_respond(d2, raw_responder)
+
+        mp2 = MailboxProfiler(d2, sync_fn=raw_sync, poll_s=0.0,
+                              id_fn=lambda: "rawid")
+        res = mp2.submit_raw("print('{}')", timeout_s=5.0)
+        assert res["chip"] == "a100" and res["passed"] is True, res
+        assert res["id"] == "rawid"                # done 마커 경유 id 채움
+
+    print("mailbox.py submit_raw self-check PASS")
 
     # 타임아웃: Colab 무응답 → MailboxTimeout
     with tempfile.TemporaryDirectory() as d2:

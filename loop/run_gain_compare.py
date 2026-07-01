@@ -50,6 +50,36 @@ class TrackResult:
     rounds: int
 
 
+# canary raw_script — Colab watch서 GPU 칩 자동탐지. detect_chip 재사용(중복 로직 0).
+_CHIP_CANARY = (
+    "import json\n"
+    "try:\n"
+    "    import torch\n"
+    "    from signals import detect_chip\n"
+    "    if torch.cuda.is_available():\n"
+    "        chip = detect_chip(torch.cuda.get_device_capability(), torch.cuda.get_device_name())\n"
+    "    else:\n"
+    "        chip = ''\n"
+    "except Exception:\n"
+    "    chip = ''\n"
+    "print(json.dumps({'passed': True, 'latency_us': 1.0, 'chip': chip}))\n"
+)
+
+
+def _detect_chip_via_mailbox(mailbox_dir, sync_fn, poll_s=5.0, timeout_s=120.0) -> str:
+    """canary raw_script를 우편함에 태워 Colab GPU 칩 키를 받아옴. 실패 시 "".
+
+    --chip 미지정 시 자동탐지 경로. watch 죽어있으면 timeout → "" (가드통과, 회귀 0).
+    """
+    from mailbox import MailboxProfiler, MailboxTimeout
+    prof = MailboxProfiler(mailbox_dir, sync_fn=sync_fn, poll_s=poll_s, timeout_s=timeout_s)
+    try:
+        res = prof.submit_raw(_CHIP_CANARY, timeout_s=timeout_s)
+    except MailboxTimeout:
+        return ""
+    return res.get("chip", "") or ""
+
+
 def _make_queued_callback(variant_codes: list[str], seed_code: str):
     """라운드별 변형코드를 순서대로 반환하는 콜백 (사전 큐잉).
 
@@ -166,15 +196,23 @@ def main() -> int:
     argv = [a for a in sys.argv[1:]
             if a != "--latency" and not a.startswith("--chip=")]
     metric_mode = "latency" if "--latency" in sys.argv else "occupancy"
-    ctx = Context(chip=chip)
 
     if len(argv) < 2:
         print("usage: python run_gain_compare.py <problem> <variants_dir> [max_rounds] "
               "[--latency] [--chip=t4|a100|h100|v100]", file=sys.stderr)
+        print("       (--chip 생략 시 canary로 Colab GPU 자동탐지)", file=sys.stderr)
         print("       python run_gain_compare.py --selfcheck", file=sys.stderr)
         return 2
 
     from run_e2e import git_sync, MAILBOX, PROBLEMS
+
+    # --chip 명시 = 수동 override. 생략 시 canary로 Colab GPU 자동탐지(design 07 §미완 배선).
+    if chip:
+        chip_src = "수동(--chip)"
+    else:
+        chip = _detect_chip_via_mailbox(MAILBOX, git_sync)
+        chip_src = "자동탐지(canary)" if chip else "미지(탐지실패→가드통과)"
+    ctx = Context(chip=chip)
 
     problem = argv[0]
     variants_dir = Path(argv[1])
@@ -202,7 +240,7 @@ def main() -> int:
     seed_code = seed_path.read_text()
 
     print(f"gain 비교 — {problem}, variants={[f.name for f in variant_files]} "
-          f"max_rounds={max_rounds} chip={chip or '미지(가드통과)'}")
+          f"max_rounds={max_rounds} chip={chip or '미지(가드통과)'} [{chip_src}]")
     print(f"  같은 variant 큐를 ON/OFF 두 트랙에 주입 (공정 비교).\n")
 
     led_base = MAILBOX.parent / "gain-compare"
@@ -226,6 +264,24 @@ def _selfcheck() -> int:
     """
     import tempfile, os
     from mailbox import fake_colab_respond
+
+    # 칩 자동탐지 canary 배선 검증: raw_script REQ → chip 실은 RES → ctx 채움.
+    with tempfile.TemporaryDirectory() as dc:
+        def chip_responder(cmd):
+            if "raw_script" in cmd:                      # canary = chip 반환
+                return {"passed": True, "latency_us": 1.0, "chip": "t4"}
+            return {"passed": True, "latency_us": 0.0, "signal_dict": {}}
+        detected = _detect_chip_via_mailbox(
+            dc, lambda _m: fake_colab_respond(dc, chip_responder),
+            poll_s=0.0, timeout_s=5.0)
+        assert detected == "t4", f"canary 자동탐지 t4 기대, got {detected!r}"
+        assert Context(chip=detected).cap("tf32") is False   # T4 = TF32 가드 차단
+    # watch 죽음(응답 0) → timeout → "" (가드통과, 회귀 0)
+    with tempfile.TemporaryDirectory() as dc2:
+        dead = _detect_chip_via_mailbox(dc2, lambda _m: None,
+                                        poll_s=0.0, timeout_s=0.0)
+        assert dead == "", f"탐지 실패 시 '' 기대, got {dead!r}"
+    print("chip 자동탐지 canary self-check PASS")
 
     # responder: 비-stop 룰(uncoalesced)을 반복 발화시키되 improved 안 되는 신호.
     #   STOP_LABELS = {memory_saturated, below_weight_gate, tensorcore_saturated} 회피:
