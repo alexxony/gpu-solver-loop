@@ -113,10 +113,13 @@ ceilings (memory-bound); llama is attention-dominated — not a loop defect, a p
 - ❌ **Evolution superiority ON>OFF.** On matmul the first fired rule is correct → no retire → ON≈OFF.
   Evolution's benefit is shown separately by sigmoid's misfire-retire. The gain axis and evolution axis
   are not demonstrated together on one problem.
-- ❌ **Multi-problem generalization.** gain=matmul (1 problem), evolution=sigmoid (1 problem).
-- ⚠️ **Two axes, separated:** loop improves (gain ✅ matmul) + evolution beats static (✅ sigmoid, and
-  retire re-observed on T4 = ON retire 1 vs OFF 0) = each single-problem. Both-on-one + multi-problem
-  generalization = future work. (T4 retire shows the *mechanism* across a 2nd chip, not gain superiority.)
+- ⚠️ **Multi-problem generalization — evolution axis ✅ 2 problems, gain axis still 1.** evolution =
+  sigmoid + conv2d (conv: `fp32_no_tensorcore` misfire → ON=2 retires→uncoalesced, OFF=forever, A100 8R);
+  gain = matmul (conv gain=null, compute ceiling). Multi-problem *gain* is unproven.
+- ⚠️ **Two axes, separated:** loop improves (gain ✅ matmul) + evolution beats static (✅ sigmoid+conv,
+  and retire re-observed on T4 = ON 1 vs OFF 0) = evolution is multi-problem, gain is single. Both-on-one
+  = future work, confirmed structurally hard twice (matmul_tri: first rule always correct; conv: retire
+  happens but the following rule's gain=null). (T4 retire shows the *mechanism* across a 2nd chip.)
 
 <p align="center"><img src="charts/retire.svg" alt="evolution ON retires the false rule at round 4 (retire=1); OFF never retires (retire=0); latency flat on both" width="560"/></p>
 
