@@ -50,6 +50,26 @@ def git_sync(mb: Path) -> None:
     raise RuntimeError(f"git push 5회 재시도 실패:\n{r.stderr}")
 
 
+def make_colab_profiler(argv):
+    """드라이버 공통 — argv서 --colab-cli [--session=<name>] 파싱 → ColabExecProfiler|None.
+
+    None이면 기존 git-우편함(MailboxProfiler). 반환 (profiler, use_colab_cli, clean_argv).
+    clean_argv = --colab-cli/--session 제거된 argv (드라이버 위치인자 파싱 보존).
+    design 10. mailbox clone 체크는 use_colab_cli일 때 스킵해야.
+    """
+    use = "--colab-cli" in argv
+    session = next((a.split("=", 1)[1] for a in argv if a.startswith("--session=")),
+                   "gpucanary")
+    clean = [a for a in argv
+             if a != "--colab-cli" and not a.startswith("--session=")]
+    prof = None
+    if use:
+        from colab_profiler import ColabExecProfiler
+        prof = ColabExecProfiler(session, remote_dir="/content/loop", timeout_s=900.0)
+        print(f"[colab-cli] session={session} — git-우편함 우회, colab exec 직결")
+    return prof, use, clean
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("problem", nargs="?", default="llama",

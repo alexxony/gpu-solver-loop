@@ -26,7 +26,8 @@ MP_LEDGER = MAILBOX.parent / "multiproblem-ledger.jsonl"
 
 
 def main() -> int:
-    if not (MAILBOX / ".git").exists():
+    profiler, use_colab_cli, _ = make_colab_profiler(sys.argv[1:])
+    if not use_colab_cli and not (MAILBOX / ".git").exists():
         print(f"ERR: mailbox clone 없음: {MAILBOX}", file=sys.stderr)
         return 2
 
@@ -50,7 +51,8 @@ def main() -> int:
         print(f"── {problem} ── ({len(seed)} chars) REQ push → RES 대기...")
         res = run_problem(problem, seed, MAILBOX, MP_LEDGER,
                           sync_fn=git_sync, max_rounds=1,
-                          poll_s=5.0, timeout_s=900.0, rules=rules)
+                          poll_s=5.0, timeout_s=900.0, rules=rules,
+                          profiler=profiler)
         print(f"   rounds={res.rounds} stop={res.stopped_reason} "
               f"evol_events={len(res.events)}")
 

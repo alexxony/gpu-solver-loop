@@ -48,7 +48,7 @@ def _make_hypcond_callback(seed_code: str, variant_map: dict[str, str]):
 
 
 def _run_track(label, problem, seed_code, variant_map, max_rounds,
-               evolve_enabled, ledger_path):
+               evolve_enabled, ledger_path, profiler=None):
     if Path(ledger_path).exists():
         Path(ledger_path).unlink()
     rules = seed_rules()
@@ -57,7 +57,8 @@ def _run_track(label, problem, seed_code, variant_map, max_rounds,
     res = run_problem(problem, seed_code, MAILBOX, ledger_path,
                       sync_fn=git_sync, max_rounds=max_rounds, poll_s=5.0,
                       timeout_s=900.0, rules=rules, generator=gen,
-                      evolve_enabled=evolve_enabled, metric_mode="latency")
+                      evolve_enabled=evolve_enabled, metric_mode="latency",
+                      profiler=profiler)
     led = Ledger(str(ledger_path))
     recs = [r for r in led.records if r.problem == problem]
     curve = led.metric_curve(problem)
@@ -69,12 +70,13 @@ def _run_track(label, problem, seed_code, variant_map, max_rounds,
 
 
 def main() -> int:
-    problem = sys.argv[1] if len(sys.argv) > 1 else "groupnorm"
-    max_rounds = int(sys.argv[2]) if len(sys.argv) > 2 else 8
+    profiler, use_colab_cli, argv = make_colab_profiler(sys.argv[1:])
+    problem = argv[0] if len(argv) > 0 else "groupnorm"
+    max_rounds = int(argv[1]) if len(argv) > 1 else 8
 
     seed_path = PROBLEMS / problem / "solve.py"
     vdir = PROBLEMS / problem / "variants"
-    if not (MAILBOX / ".git").exists():
+    if not use_colab_cli and not (MAILBOX / ".git").exists():
         print(f"ERR: mailbox clone 없음 {MAILBOX}", file=sys.stderr); return 2
     seed_code = seed_path.read_text()
 
@@ -103,9 +105,9 @@ def main() -> int:
 
     base = MAILBOX.parent / f"gain-hypcond-{problem}"
     off = _run_track("evolve_OFF", problem, seed_code, variant_map,
-                     max_rounds, False, f"{base}-off.jsonl")
+                     max_rounds, False, f"{base}-off.jsonl", profiler=profiler)
     on = _run_track("evolve_ON", problem, seed_code, variant_map,
-                    max_rounds, True, f"{base}-on.jsonl")
+                    max_rounds, True, f"{base}-on.jsonl", profiler=profiler)
     _report(on, off, metric_mode="latency")
     return 0
 

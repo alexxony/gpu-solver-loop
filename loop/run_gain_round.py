@@ -20,25 +20,26 @@ from runner import run_problem
 from ledger import Ledger
 from rules import seed_rules
 from generator import CallbackGenerator
-from run_e2e import git_sync, MAILBOX, PROBLEMS
+from run_e2e import git_sync, MAILBOX, PROBLEMS, make_colab_profiler
 
 GAIN_LEDGER = MAILBOX.parent / "gain-ledger.jsonl"
 
 
 def main() -> int:
-    if len(sys.argv) < 3:
-        print("usage: python run_gain_round.py <problem> <variant_solve.py>",
-              file=sys.stderr)
+    profiler, use_colab_cli, argv = make_colab_profiler(sys.argv[1:])
+    if len(argv) < 2:
+        print("usage: python run_gain_round.py <problem> <variant_solve.py> "
+              "[--colab-cli] [--session=<name>]", file=sys.stderr)
         return 2
-    problem = sys.argv[1]
-    variant_path = Path(sys.argv[2])
+    problem = argv[0]
+    variant_path = Path(argv[1])
 
     seed_path = PROBLEMS / problem / "solve.py"
     if not seed_path.exists():
         print(f"ERR: seed 없음 {seed_path}", file=sys.stderr); return 2
     if not variant_path.exists():
         print(f"ERR: variant 없음 {variant_path}", file=sys.stderr); return 2
-    if not (MAILBOX / ".git").exists():
+    if not use_colab_cli and not (MAILBOX / ".git").exists():
         print(f"ERR: mailbox clone 없음 {MAILBOX}", file=sys.stderr); return 2
 
     if GAIN_LEDGER.exists():
@@ -67,7 +68,7 @@ def main() -> int:
     res = run_problem(problem, seed_code, MAILBOX, GAIN_LEDGER,
                       sync_fn=git_sync, max_rounds=2, poll_s=5.0,
                       timeout_s=900.0, rules=shared, generator=gen,
-                      evolve_enabled=True)
+                      evolve_enabled=True, profiler=profiler)
 
     led = Ledger(str(GAIN_LEDGER))
     recs = [r for r in led.records if r.problem == problem]
