@@ -66,16 +66,19 @@ _CHIP_CANARY = (
 )
 
 
-def _detect_chip_via_mailbox(mailbox_dir, sync_fn, poll_s=5.0, timeout_s=120.0) -> str:
-    """canary raw_script를 우편함에 태워 Colab GPU 칩 키를 받아옴. 실패 시 "".
+def _detect_chip_via_mailbox(mailbox_dir, sync_fn, poll_s=5.0, timeout_s=120.0,
+                             profiler=None) -> str:
+    """canary raw_script를 태워 Colab GPU 칩 키를 받아옴. 실패 시 "".
 
-    --chip 미지정 시 자동탐지 경로. watch 죽어있으면 timeout → "" (가드통과, 회귀 0).
+    --chip 미지정 시 자동탐지 경로. watch/exec 죽어있으면 실패 → "" (가드통과, 회귀 0).
+    profiler=None이면 MailboxProfiler(우편함). ColabExecProfiler 주입 시 colab-cli 직결.
     """
-    from mailbox import MailboxProfiler, MailboxTimeout
-    prof = MailboxProfiler(mailbox_dir, sync_fn=sync_fn, poll_s=poll_s, timeout_s=timeout_s)
+    from mailbox import MailboxProfiler
+    prof = profiler or MailboxProfiler(mailbox_dir, sync_fn=sync_fn,
+                                       poll_s=poll_s, timeout_s=timeout_s)
     try:
         res = prof.submit_raw(_CHIP_CANARY, timeout_s=timeout_s)
-    except MailboxTimeout:
+    except Exception:      # MailboxTimeout(우편함) | ColabExecError(colab-cli) 등 = 탐지실패
         return ""
     return res.get("chip", "") or ""
 
@@ -100,8 +103,11 @@ def _make_queued_callback(variant_codes: list[str], seed_code: str):
 def _run_track(label: str, problem: str, seed_code: str, variant_codes: list[str],
                mailbox_dir, ledger_path, sync_fn, max_rounds: int,
                evolve_enabled: bool, poll_s: float, timeout_s: float,
-               metric_mode: str = "occupancy", ctx=None) -> TrackResult:
-    """한 트랙 실행 — 같은 variant 큐, evolve_enabled만 다름. ctx=칩 환경 가드."""
+               metric_mode: str = "occupancy", ctx=None, profiler=None) -> TrackResult:
+    """한 트랙 실행 — 같은 variant 큐, evolve_enabled만 다름. ctx=칩 환경 가드.
+
+    profiler=None이면 MailboxProfiler(git-우편함). ColabExecProfiler 주입 시 colab-cli 직결.
+    """
     if Path(ledger_path).exists():
         Path(ledger_path).unlink()
     rules = seed_rules()                  # 트랙마다 새 룰판 (오염 방지)
@@ -112,7 +118,8 @@ def _run_track(label: str, problem: str, seed_code: str, variant_codes: list[str
     res = run_problem(problem, seed_code, mailbox_dir, ledger_path,
                       sync_fn=sync_fn, max_rounds=max_rounds, poll_s=poll_s,
                       timeout_s=timeout_s, rules=rules, generator=gen,
-                      evolve_enabled=evolve_enabled, metric_mode=metric_mode, ctx=ctx)
+                      evolve_enabled=evolve_enabled, metric_mode=metric_mode,
+                      ctx=ctx, profiler=profiler)
 
     led = Ledger(str(ledger_path))
     recs = [r for r in led.records if r.problem == problem]
@@ -193,8 +200,14 @@ def main() -> int:
     #   T4 명시 시 TF32 룰 차단 → 진화가 흡수하는지 실측. cmd가 자동탐지 라우팅 없어
     #   사용자가 런타임 칩을 명시 (Colab T4/A100 선택과 일치).
     chip = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--chip=")), "")
+    # --colab-cli [--session=<name>] = git-우편함 대신 colab-cli 직결(design 10).
+    #   세션 생략 시 'gpucanary' 기본. mailbox/git_sync 미사용, colab exec 왕복.
+    use_colab_cli = "--colab-cli" in sys.argv
+    session = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--session=")),
+                   "gpucanary")
     argv = [a for a in sys.argv[1:]
-            if a != "--latency" and not a.startswith("--chip=")]
+            if a not in ("--latency", "--colab-cli")
+            and not a.startswith("--chip=") and not a.startswith("--session=")]
     metric_mode = "latency" if "--latency" in sys.argv else "occupancy"
 
     if len(argv) < 2:
@@ -206,11 +219,18 @@ def main() -> int:
 
     from run_e2e import git_sync, MAILBOX, PROBLEMS
 
+    # colab-cli 모드 = ColabExecProfiler 주입(mailbox/git 미사용). 기본 = MailboxProfiler(우편함).
+    profiler = None
+    if use_colab_cli:
+        from colab_profiler import ColabExecProfiler
+        profiler = ColabExecProfiler(session, remote_dir="/content/loop", timeout_s=900.0)
+        print(f"[colab-cli] session={session} — git-우편함 우회, colab exec 직결")
+
     # --chip 명시 = 수동 override. 생략 시 canary로 Colab GPU 자동탐지(design 07 §미완 배선).
     if chip:
         chip_src = "수동(--chip)"
     else:
-        chip = _detect_chip_via_mailbox(MAILBOX, git_sync)
+        chip = _detect_chip_via_mailbox(MAILBOX, git_sync, profiler=profiler)
         chip_src = "자동탐지(canary)" if chip else "미지(탐지실패→가드통과)"
     ctx = Context(chip=chip)
 
@@ -223,7 +243,7 @@ def main() -> int:
         print(f"ERR: seed 없음 {seed_path}", file=sys.stderr); return 2
     if not variants_dir.is_dir():
         print(f"ERR: variants 디렉터리 없음 {variants_dir}", file=sys.stderr); return 2
-    if not (MAILBOX / ".git").exists():
+    if not use_colab_cli and not (MAILBOX / ".git").exists():
         print(f"ERR: mailbox clone 없음 {MAILBOX}", file=sys.stderr); return 2
 
     # variants/<problem>/R1.py, R2.py ... 순서 로드 (R0=seed라 R1부터).
@@ -247,11 +267,11 @@ def main() -> int:
     off = _run_track("evolve_OFF", problem, seed_code, variant_codes,
                      MAILBOX, f"{led_base}-off.jsonl", git_sync, max_rounds,
                      evolve_enabled=False, poll_s=5.0, timeout_s=900.0,
-                     metric_mode=metric_mode, ctx=ctx)
+                     metric_mode=metric_mode, ctx=ctx, profiler=profiler)
     on = _run_track("evolve_ON", problem, seed_code, variant_codes,
                     MAILBOX, f"{led_base}-on.jsonl", git_sync, max_rounds,
                     evolve_enabled=True, poll_s=5.0, timeout_s=900.0,
-                    metric_mode=metric_mode, ctx=ctx)
+                    metric_mode=metric_mode, ctx=ctx, profiler=profiler)
     _report(on, off, metric_mode)
     return 0
 

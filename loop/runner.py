@@ -87,6 +87,7 @@ def run_problem(
     generator=None,
     metric_mode: str = "occupancy",
     ctx=None,
+    profiler=None,
 ) -> LoopResult:
     """한 문제를 자동 루프에 태운다 — 우편함 경유 측정 + 룰 진화.
 
@@ -97,9 +98,12 @@ def run_problem(
       다문제 라운드는 같은 rules 객체를 문제 간 주입 → 진화 누적 (04-multiproblem 설계).
     generator: glue.Generator 구현. None이면 FixedGenerator(seed 고정, 배관용).
       RealGenerator(LLM API) 또는 ManualGenerator(대행)를 주입해 코드 변형 라운드.
+    profiler: 왕복 프로파일러. None이면 MailboxProfiler(git-우편함, 기존).
+      ColabExecProfiler 주입 시 colab-cli 직결(mailbox_dir/sync_fn 무시). 회귀 0.
     """
-    profiler = MailboxProfiler(mailbox_dir, sync_fn=sync_fn,
-                               poll_s=poll_s, timeout_s=timeout_s)
+    if profiler is None:
+        profiler = MailboxProfiler(mailbox_dir, sync_fn=sync_fn,
+                                   poll_s=poll_s, timeout_s=timeout_s)
     gen = generator if generator is not None else FixedGenerator(seed_code)
     glue = MailboxGlue(gen, profiler)
     ledger = Ledger(str(ledger_path))
