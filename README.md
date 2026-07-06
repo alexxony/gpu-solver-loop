@@ -13,6 +13,38 @@ Prior art (CUDAMaster, arXiv 2603.07169) already implements the "deterministic r
 LLM rewrite → measure-verify" pipeline. **My contribution = the classification rule table itself
 evolves from measurement feedback.** All 6 surveyed prior systems use static rules.
 
+## Roadmap
+
+Eight phases from measurement base to generalization. **P0–P5 done** (green), **P6 in progress**
+(yellow), **P7 future** (red). The three axes (gain · evolution · chip) branch at P5 — each proven
+separately.
+
+```mermaid
+flowchart LR
+    P0["P0 Measurement base<br/>ncu/nsys signals"] --> P1["P1 Manual PoC<br/>6R cumulative 3.86×"]
+    P1 --> P2["P2 Differentiator<br/>rulebase evolution = unique"]
+    P2 --> P3["P3 Automation infra<br/>mailbox → colab-cli"]
+    P3 --> P4["P4 Mechanism proof<br/>evolution ON/OFF retire"]
+    P4 --> P5["P5 Three axes<br/>gain·evolution·chip"]
+    P5 --> P6["P6 Portfolio polish<br/>narrative·viz·glossary"]
+    P6 --> P7["P7 Generalization<br/>multi-problem gain·both-on-one"]
+
+    P5 --> A1["gain axis<br/>matmul 6.4×"]
+    P5 --> A2["evolution axis<br/>sigmoid+conv retire"]
+    P5 --> A3["chip axis<br/>T4 guard-block"]
+
+    classDef done fill:#d5e8d4,stroke:#82b366,stroke-width:2px;
+    classDef wip fill:#fff2cc,stroke:#d6b656,stroke-width:2px;
+    classDef future fill:#f8cecc,stroke:#b85450,stroke-width:2px;
+    classDef axis fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px;
+    class P0,P1,P2,P3,P4,P5 done
+    class P6 wip
+    class P7 future
+    class A1,A2,A3 axis
+```
+
+> 🟢 done · 🟡 in progress · 🔴 future. Currently at P6 (portfolio polish).
+
 ## Architecture
 
 One round = generate → gate → profile → match (hypothesis) → ledger → evolve. **The differentiator
