@@ -24,7 +24,7 @@ class Rule:
     rationale: str                   # 왜 이 신호→이 병목 (근거 1줄, 필수)
     priority: int                    # 낮을수록 먼저 (지배 병목 우선)
     # 환경 가드 (design [[07-chip-lang-context-design]]): 이 룰이 요구하는 칩 capability.
-    # ""=칩 무관(항상 가능). "tf32"=TF32 있는 칩서만 발화 (T4/V100서 헛가설 차단).
+    # ""=칩 무관(항상 가능). "tf32"=TF32 있는 칩서만 발화 (T4/V100서 오탐 차단).
     # 신호 cond와 분리한 이유: lambda 11개 안 건드리고 가드를 선언적 1필드로 (회귀 0).
     chip_cap: str = ""
     # evolver가 갱신하는 진화 상태
@@ -64,7 +64,7 @@ def seed_rules() -> list[Rule]:
                    "fp32 sgemm은 텐서코어 미사용 (R5: matmul 52.7%→20.3%, 전체 1.71×).",
             rationale="fp32 GEMM = CUDA코어, 텐서코어 놀고있음 → TF32로 태우면 대폭↓",
             priority=1,
-            chip_cap="tf32",   # TF32 있는 칩(A100/H100)서만. T4/V100엔 TF32 없음 → 헛가설 차단.
+            chip_cap="tf32",   # TF32 있는 칩(A100/H100)서만. T4/V100엔 TF32 없음 → 오탐 차단.
         ),
         Rule(
             label="tensorcore_saturated",
@@ -148,7 +148,7 @@ def match(sig: Signal, rules: list[Rule], ctx: Context | None = None) -> Hypothe
 
     ctx (design [[07-chip-lang-context-design]]): 환경 가드. None=DEFAULT_CTX(칩 미지=모두 통과,
     종전 A100 동작 보존). 룰의 chip_cap이 비고 그 칩이 능력 없으면 발화 차단 (T4서 TF32 룰 등).
-    cond(신호)와 chip_cap(환경)을 AND — 신호 맞아도 칩이 못 하면 헛가설이라 끔.
+    cond(신호)와 chip_cap(환경)을 AND — 신호 맞아도 칩이 못 하면 오탐이라 끔.
     """
     ctx = ctx or DEFAULT_CTX
     live = [(i, r) for i, r in enumerate(rules)
@@ -213,7 +213,7 @@ if __name__ == "__main__":
                          "weight_pct": 0.0, "latency_us": 100.0}), rules)
     assert h is not None and h.label == "attention_dominant", h
 
-    # self-check 8 (a 가드): attention op지만 비중<40% → 발화 안 함 (오발화 방지)
+    # self-check 8 (a 가드): attention op지만 비중<40% → 발화 안 함 (오탐 방지)
     h = match(from_dict({"op_weight": 0.2, "op_name": "aten::sdpa",
                          "weight_pct": 0.0, "load_eff": 0.9, "latency_us": 10.0}), rules)
     assert h is None, h

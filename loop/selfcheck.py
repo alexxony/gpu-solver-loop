@@ -30,7 +30,7 @@ def differentiator_e2e() -> None:
     """차별점 증명: 진화 ON vs OFF 비교.
 
     같은 문제 시퀀스에서, 시드룰이 '틀린 가설'을 반복 발화하는 상황.
-    - 정적(CUDAMaster류): 룰 신뢰도 고정 → 영원히 같은 틀린 룰 발화.
+    - 정적(CUDAMaster류): 룰 신뢰도 고정 → 영원히 같은 오탐 룰 발화.
     - 진화(우리): 실패 누적 → 룰 강등→폐기 → 다음 후보로 전환.
     before/after 신뢰도를 찍어 '메타루프가 실제로 작동'을 증명.
     """
@@ -77,7 +77,7 @@ def differentiator_e2e() -> None:
         assert conf_after < conf_before, "신뢰도 하락해야 (진화 증거)"
         assert retired, "반복 실패 룰 폐기돼야 (CUDAMaster엔 없는 동작)"
 
-        # 폐기 후 같은 신호 → 더는 그 틀린 룰 안 뽑음
+        # 폐기 후 같은 신호 → 더는 그 오탐 룰 안 뽑음
         h_final = match(from_dict(bad_sig), rules)
         assert h_final is None or h_final.rule_idx != idx, \
             "폐기 룰 재발화 금지 — 다음 후보로 전환"

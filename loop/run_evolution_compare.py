@@ -1,7 +1,7 @@
 """옵션 1 — 진화 ON/OFF 비교 (LLM·GPU 0). evolver demote/retire 메커니즘 검증.
 
 설계: GPU-Solver/docs/04-multiproblem-round-design.md §B 옵션1.
-A에서 발견: fp32_no_tensorcore가 sigmoid(메모리바운드) 오발화. 이 룰이 측정 피드백
+A에서 발견: fp32_no_tensorcore가 sigmoid(메모리바운드) 오탐. 이 룰이 측정 피드백
 (improved=False 반복)으로 demote→retire 되는지 = 차별점 메커니즘 실증.
 
 fake responder = sigmoid 실측 신호(A의 RES, bw 0.668 등) 고정 주입. GPU 왕복 0.
@@ -69,7 +69,7 @@ def _run(rounds: int, shared_rules, evolve_enabled: bool):
 def main() -> int:
     ROUNDS = 6
     print(f"진화 ON/OFF 비교 — sigmoid {ROUNDS}라운드, 신호 고정(bw={SIGMOID_SIGNAL['bw_pct']})")
-    print("  fp32_no_tensorcore 오발화가 측정 피드백으로 폐기되는지 검증\n")
+    print("  fp32_no_tensorcore 오탐가 측정 피드백으로 폐기되는지 검증\n")
 
     # ── OFF: 정적 baseline (매 라운드 새 seed_rules) ──
     print("=== 진화 OFF (정적 — CUDAMaster류) ===")
@@ -104,8 +104,8 @@ def main() -> int:
     fp32_retired = any(r.label == "fp32_no_tensorcore" and r.retired for r in shared)
     off_stuck = off_labels.count("fp32_no_tensorcore") > on_labels.count("fp32_no_tensorcore")
     if fp32_retired:
-        print("✅ ON: fp32_no_tensorcore 오발화 룰 RETIRE = 측정 피드백으로 폐기.")
-        print("   OFF(정적)는 같은 오발화 영원 반복 → 진화가 헛가설 차단 = 메커니즘 실증.")
+        print("✅ ON: fp32_no_tensorcore 오탐 룰 RETIRE = 측정 피드백으로 폐기.")
+        print("   OFF(정적)는 같은 오탐 영원 반복 → 진화가 오탐 차단 = 메커니즘 실증.")
     elif "retire" in evol_kinds or "demote" in evol_kinds:
         print("⚠️ demote는 일어났으나 retire 미달 (라운드↑ 또는 RETIRE 조건 확인).")
         print(f"   ON 발화 변천이 OFF와 다른지: {on_labels != off_labels}")

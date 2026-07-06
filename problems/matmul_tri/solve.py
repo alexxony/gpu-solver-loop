@@ -5,7 +5,7 @@ load_eff↓ → `uncoalesced` 룰 조건. 단 fp32+compute+not tensorcore라 pri
 `fp32_no_tensorcore`가 먼저 발화 → TF32 variant. **Triton 커널은 set_float32_matmul_precision
 무효**(cuBLAS 아님) → null → demote 누적 → retire → `uncoalesced` 승격 → 합착 fix → 진짜 gain.
 
-= ON: fp32룰 헛발화→retire→uncoalesced→합착→빨라짐. OFF: fp32룰 영원→TF32 무효 영원.
+= ON: fp32룰 오탐→retire→uncoalesced→합착→빨라짐. OFF: fp32룰 영원→TF32 무효 영원.
   ON best < OFF best = 진화가 gain 낸다 (두 축 한 문제서 동시).
 
 executor 계약: make_case / run_solve / reference / GATE_SIZES / PROFILE_SIZE.

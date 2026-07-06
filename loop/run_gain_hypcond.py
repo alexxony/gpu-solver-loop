@@ -9,7 +9,7 @@
   - 그 외/R0                 → seed (base)
 
 이러면 진화 차이가 코드 차이로 이어짐 (공정: 양쪽 같은 콜백 로직):
-  ON : fp32 헛발화→TF32(null)→demote 누적→retire→uncoalesced 발화→합착→빨라짐.
+  ON : fp32 오탐→TF32(null)→demote 누적→retire→uncoalesced 발화→합착→빨라짐.
   OFF: fp32 영원 발화→TF32(null) 영원→영원 같은 latency.
   → ON best latency < OFF best latency = 성능 gain (진화→더 빠른 커널).
 

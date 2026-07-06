@@ -32,7 +32,7 @@
      A GPU-kernel optimization loop whose <b>classification rules evolve from measurement feedback</b></p>
 
   <p>루프 한 바퀴 = <code>generate → gate → profile → hypothesize → measure → evolve</code>.
-     차별점은 마지막 단계: 측정이 룰을 되먹여 <b>틀린 룰을 폐기(retire)</b>하고 맞는 룰의 신뢰도를 올린다.
+     차별점은 마지막 단계: 측정이 룰을 되먹여 <b>오탐 룰을 폐기(retire)</b>하고 맞는 룰의 신뢰도를 올린다.
      CUDAMaster 등 선행 시스템은 이 되먹임이 없다(룰표 정적).
      <span class="diff">rule DB evolution = 유일 차별점</span></p>
 
@@ -45,12 +45,12 @@
      <br/><b>The loop selected a genuinely different kernel — not a flag tweak.</b>
      Single compute-bound example (honest scope).</p>
 
-  <h2>② 룰 진화 — 측정으로 헛가설 폐기</h2>
+  <h2>② 룰 진화 — 측정으로 오탐 룰 폐기</h2>
   <p class="h2sub">rules retire on measurement — what prior systems can't do (T4, 8 rounds)</p>
   <div class="card"><img src="charts/retire.svg" alt="evolution ON retires false rule at round 4, OFF never retires"/></div>
-  <p class="cap">T4에서 <code>reg_pressure</code> 헛가설이 8라운드 발화.
+  <p class="cap">T4에서 <code>reg_pressure</code> 오탐이 8라운드 발화.
      진화 <b>ON</b>: 4라운드째 측정 누적으로 <b>retire=1</b> → 다음 적격 룰로 전환.
-     진화 <b>OFF</b>: <b>retire=0</b>, 영원히 헛가설 반복.
+     진화 <b>OFF</b>: <b>retire=0</b>, 영원히 오탐 반복.
      <br/>⚠ latency는 두 트랙 모두 평평(48.4 ms, T4 fp32 천장) = gain 아님.
      <b>차이는 오직 retire에서만 — 이게 선행이 못 하는 것.</b>
      <br/><b>The difference is the retire, not speed.</b></p>
@@ -58,7 +58,7 @@
   <h2>세 축 각각 실증 / three axes, each demonstrated</h2>
   <ul>
     <li><b>gain 축</b> — matmul 6.4× (A100, 위 ①)</li>
-    <li><b>진화 축</b> — reg_pressure retire (T4, 위 ②) + sigmoid 오발화 retire (A100)</li>
+    <li><b>진화 축</b> — reg_pressure retire (T4, 위 ②) + sigmoid 오탐 retire (A100)</li>
     <li><b>칩 축</b> — 같은 신호, 칩 따라 다른 룰: A100=<code>fp32_no_tensorcore</code> 발화 vs T4=가드 차단
         (chip guard, <a href="README.md">아키텍처 다이어그램 참조</a>)</li>
   </ul>

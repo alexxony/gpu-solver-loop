@@ -160,7 +160,7 @@ def _report(on: TrackResult, off: TrackResult, metric_mode: str = "occupancy") -
     print("\n--- 판정 ---")
     gain_signals = []
     if on.retire_count > off.retire_count:
-        gain_signals.append(f"retire ON={on.retire_count} > OFF={off.retire_count} (틀린 룰 폐기)")
+        gain_signals.append(f"retire ON={on.retire_count} > OFF={off.retire_count} (오탐 룰 폐기)")
     if on.wasted_rounds < off.wasted_rounds:
         gain_signals.append(f"헛라운드 ON={on.wasted_rounds} < OFF={off.wasted_rounds} (덜 헤맴)")
     if on.fired_rules != off.fired_rules:
@@ -279,7 +279,7 @@ def main() -> int:
 def _selfcheck() -> int:
     """GPU·git·LLM 0 — fake 우편함으로 ON/OFF 비교 로직 검증.
 
-    설계: variant가 '틀린 룰을 반복 발화시키는' 신호를 내게 만들어, ON 트랙선
+    설계: variant가 '오탐 룰을 반복 발화시키는' 신호를 내게 만들어, ON 트랙선
     retire가 일어나고 OFF 트랙선 안 일어남을 확인 = gain 신호 갈림 검증.
     """
     import tempfile, os

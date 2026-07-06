@@ -78,7 +78,7 @@ def _group_norm_kernel(
 def solve(X, gamma, beta, Y, N, C, H, W, G, eps):
     # [variant: fp32_no_tensorcore 가설 충실] TF32 허용 — fp32 matmul을 텐서코어로.
     # ⚠️ 의도된 null: groupnorm은 Triton reduction 커널, matmul 없음 → 효과 0.
-    #   발화 룰(fp32_no_tensorcore)이 이 워크로드에 오발화임을 latency 불변으로 폭로.
+    #   발화 룰(fp32_no_tensorcore)이 이 워크로드에 오탐임을 latency 불변으로 폭로.
     torch.set_float32_matmul_precision("high")
     HW = H * W
     cpg = C // G

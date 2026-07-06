@@ -43,7 +43,7 @@ def run_loop(problem: str, glue, ledger: Ledger, rules: list[Rule] | None = None
              metric_mode: str = "occupancy",
              ctx: Context | None = None) -> LoopResult:
     # ctx (design 07): 환경 가드. None=칩 미지=모든 가드 통과(종전 A100 동작 보존).
-    #   T4 등 명시 시 match가 chip_cap 가드로 헛가설 차단 → 진화가 흡수.
+    #   T4 등 명시 시 match가 chip_cap 가드로 오탐 차단 → 진화가 흡수.
     # evolve_enabled=False = 정적 baseline (CUDAMaster류): 룰 고정, 진화 안 함.
     #   매치는 하되 success/fail 누적·retire 스킵 → 같은 룰 영원히 발화.
     # metric_mode="latency"면 _metric이 -latency_us(음수) 반환 → best 초기 -inf 필요
