@@ -68,10 +68,13 @@ def seed_rules() -> list[Rule]:
         ),
         Rule(
             label="tensorcore_saturated",
-            cond=lambda t: t.tensorcore_active and t.latency_us > SLOW_LATENCY_US,
+            cond=lambda t: t.tensorcore_active and t.compute_tput > 0.5
+            and t.latency_us > SLOW_LATENCY_US,
             prompt="STOP: 이미 텐서코어 경로. 저정밀(bf16) 추가 가속 거의 없음, "
                    "정확성만 악화 (R6 반증: TF32 0.853 vs bf16 0.850, 동률).",
-            rationale="A100 TF32 throughput ≈ bf16 (같은 TC 파이프) → 저정밀 무효",
+            rationale="A100 TF32 throughput ≈ bf16 (같은 TC 파이프) → 저정밀 무효. "
+                      "compute_tput>0.5 가드: TC 미세활성이어도 memory-bound면 saturated 아님 "
+                      "(게이트 A 실측: softmax/reduce가 tc=True 오탐으로 이 룰 오발화 → 룰4/6 선점 차단).",
             priority=1,
             chip_cap="tf32",   # "TF32≈bf16" 근거가 TF32 칩 전제. 비-TF32 칩선 이 STOP 부적용.
         ),
@@ -181,10 +184,17 @@ if __name__ == "__main__":
     assert h is not None and h.label == "fp32_no_tensorcore", h
     assert not h.is_stop, h
 
-    # self-check 3: 텐서코어 이미 활성 + 느림 → STOP, 저정밀 무효 (R6 bf16 반증)
+    # self-check 3: 텐서코어 이미 활성 + compute 포화 + 느림 → STOP, 저정밀 무효 (R6 bf16 반증)
+    # compute_tput>0.5 가드: 진짜 TC-saturated는 compute 지배. memory-bound TC 미세활성 배제.
     h = match(from_dict({"weight_pct": 0.49, "tensorcore_active": True,
-                         "latency_us": 100.0}), rules)
+                         "compute_tput": 0.9, "latency_us": 100.0}), rules)
     assert h is not None and h.label == "tensorcore_saturated" and h.is_stop, h
+
+    # self-check 3b: TC 미세활성이나 memory-bound(compute 낮음) → tc_saturated 아님, 융합 룰로
+    # (게이트 A 실측 회귀 방지: softmax/reduce tc=True 오탐이 룰3 선점하던 것 차단)
+    h = match(from_dict({"weight_pct": 1.0, "tensorcore_active": True,
+                         "compute_tput": 0.27, "bw_pct": 0.88, "latency_us": 178.0}), rules)
+    assert h is not None and h.label != "tensorcore_saturated", h
 
     # self-check 4: 비중≥5% 메모리바운드 텐서코어 off → 융합 (R3' 약적중)
     h = match(from_dict({"weight_pct": 0.11, "bw_pct": 0.7, "compute_tput": 0.1,
