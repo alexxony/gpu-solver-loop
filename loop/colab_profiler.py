@@ -28,8 +28,9 @@ from mailbox import MailboxResult, MailboxTimeout
 # 파이프로 cmd 못 줌 → 매 호출 wrapper에 박아 -f 실행). executor.execute_request 호출,
 # 결과를 stdout `__RES__<json>` 줄로 출력. raw_script면 exec(watch._run_raw_script 계약).
 _WRAPPER_TEMPLATE = r'''
-import sys, json, io, contextlib
+import sys, json, io, contextlib, importlib
 sys.path.insert(0, {remote_dir!r})
+importlib.invalidate_caches()
 cmd = json.loads({cmd_json!r})
 if "raw_script" in cmd:
     ns = {{}}
