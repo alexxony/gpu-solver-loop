@@ -133,14 +133,25 @@ main()
 
 
 def _variant_map_for(problem: str) -> dict[str, str]:
-    """run_gain_hypcond와 동일 규약 — 발화 룰 라벨 → 충실 variant 코드."""
+    """발화 룰 라벨 → 충실 variant 코드. **존재하는 파일만** 매핑(자연 다문제 전제).
+
+    variant 없는 룰이 발화하면 콜백이 seed로 폴백 — STOP 룰(memory_saturated 등)로
+    정지하는 문제는 variant 0개여도 배치에 태울 수 있음. 파일명 규약:
+    R_tf32(on).py=fp32_no_tensorcore, R_coalesced.py=uncoalesced, R_fused.py=memory_bound_fusable.
+    """
     vdir = PROBLEMS / problem / "variants"
-    if problem == "matmul":
-        return {"fp32_no_tensorcore": (vdir / "R_tf32on.py").read_text()}
-    return {
-        "fp32_no_tensorcore": (vdir / "R_tf32.py").read_text(),
-        "uncoalesced": (vdir / "R_coalesced.py").read_text(),
+    name_map = {
+        "R_tf32on.py": "fp32_no_tensorcore",   # matmul형 (TF32 실효)
+        "R_tf32.py": "fp32_no_tensorcore",     # scalar형 (null)
+        "R_coalesced.py": "uncoalesced",
+        "R_fused.py": "memory_bound_fusable",
     }
+    vmap: dict[str, str] = {}
+    for fname, label in name_map.items():
+        p = vdir / fname
+        if p.exists() and label not in vmap:
+            vmap[label] = p.read_text()
+    return vmap
 
 
 def _build_remote_driver(problems: list[str], max_rounds: int) -> str:
@@ -219,47 +230,72 @@ def main() -> int:
         return 0
 
     session = None
+    gpu = None
     skip_upload = "--skip-upload" in argv
     rest = []
     for a in argv:
         if a.startswith("--session="):
             session = a.split("=", 1)[1]
+        elif a.startswith("--gpu="):
+            gpu = a.split("=", 1)[1]
         elif a not in ("--skip-upload",):
             rest.append(a)
     if not session or not rest:
         print("usage: run_ablation_remote.py <p1>[,<p2>...] [max_rounds] "
-              "--session=<s> [--skip-upload] [--selfcheck]", file=sys.stderr)
+              "--session=<s> [--gpu=A100] [--skip-upload] [--selfcheck]",
+              file=sys.stderr)
         return 2
     problems = rest[0].split(",")
     max_rounds = int(rest[1]) if len(rest) > 1 else 8
 
-    if not skip_upload:
-        _upload_modules(session)
-
     driver_src = _build_remote_driver(problems, max_rounds)
     total_rounds = len(problems) * 2 * max_rounds
     timeout = total_rounds * 150 + 300          # 라운드당 여유 150s + 부팅 여유
-
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
         f.write(driver_src)
         path = f.name
-    print(f"[launch] 문제 {problems} × ON/OFF × {max_rounds}R — "
-          f"colab exec 1방 (timeout {timeout:.0f}s)")
+
+    def _alive() -> bool:
+        p = subprocess.run(["colab", "exec", "-s", session, "--timeout", "60"],
+                           input="print('ALIVE')", capture_output=True,
+                           text=True, timeout=120)
+        return p.returncode == 0 and "ALIVE" in p.stdout
+
     result = None
-    try:
-        p = _colab(["colab", "exec", "-s", session, "-f", path,
-                    "--timeout", str(timeout)], timeout + 120)
-        sys.stdout.write(p.stdout)
-        for ln in reversed(p.stdout.splitlines()):
-            if ln.startswith("__ABL_RESULT__"):
-                result = json.loads(ln[len("__ABL_RESULT__"):])
-                break
-    except subprocess.TimeoutExpired:
-        print("[warn] 전송 타임아웃 — 원격 결과 파일 회수 시도", file=sys.stderr)
+    for attempt in (1, 2):                       # 세션 자기치유: 죽었으면 재생성 1회
+        if not _alive():
+            if not gpu:
+                print(f"ERR: 세션 {session} 죽음 (--gpu 미지정이라 재생성 불가)",
+                      file=sys.stderr)
+                return 1
+            print(f"[heal] 세션 {session} 죽음 → colab new --gpu {gpu} (attempt {attempt})")
+            _retry("colab new", lambda: _colab(
+                ["colab", "new", "--gpu", gpu, f"--session={session}"], 420))
+            _upload_modules(session)
+        elif not skip_upload and attempt == 1:
+            _upload_modules(session)
+
+        print(f"[launch] 문제 {problems} × ON/OFF × {max_rounds}R — "
+              f"colab exec 1방 (timeout {timeout:.0f}s, attempt {attempt})")
+        try:
+            p = _colab(["colab", "exec", "-s", session, "-f", path,
+                        "--timeout", str(timeout)], timeout + 120)
+            sys.stdout.write(p.stdout)
+            if p.returncode != 0:
+                print(f"[warn] exec rc={p.returncode}: {p.stderr[-400:]}",
+                      file=sys.stderr)
+            for ln in reversed(p.stdout.splitlines()):
+                if ln.startswith("__ABL_RESULT__"):
+                    result = json.loads(ln[len("__ABL_RESULT__"):])
+                    break
+        except subprocess.TimeoutExpired:
+            print("[warn] 전송 타임아웃 — 원격 결과 파일 회수 시도", file=sys.stderr)
+        if result is None:
+            result = _fetch_result_file(session)
+        if result is not None:
+            break
     if result is None:
-        result = _fetch_result_file(session)
-    if result is None:
-        print("ERR: 결과 회수 실패 (stdout·파일 둘 다)", file=sys.stderr)
+        print("ERR: 결과 회수 실패 (stdout·파일·재생성 재시도 전부)", file=sys.stderr)
         return 1
 
     print(f"\n[chip={result.get('chip')!r}]")
