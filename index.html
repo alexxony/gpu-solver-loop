@@ -43,7 +43,7 @@
      루프가 <code>fp32_no_tensorcore</code> 룰을 발화 → TF32 코드 선택 → <b>6.4× 실측</b>.
      커널명이 달라짐(sgemm ≠ tensorop) = 플래그 조작이 아니라 진짜 다른 커널 선택.
      <br/><b>The loop selected a genuinely different kernel — not a flag tweak.</b>
-     Single compute-bound example (honest scope).</p>
+     동일 계약으로 batched GEMM에서도 <b>4.5×</b>(2631→580 us) — gain 축 2문제.</p>
 
   <h2>② 룰 진화 — 측정으로 오탐 룰 폐기</h2>
   <p class="h2sub">rules retire on measurement — what prior systems can't do (T4, 8 rounds)</p>
@@ -55,17 +55,33 @@
      <b>차이는 오직 retire에서만 — 이게 선행이 못 하는 것.</b>
      <br/><b>The difference is the retire, not speed.</b></p>
 
+  <h2>③ 진화 ON이 OFF보다 빠른 커널에 도달 — endpoint 실증 <span class="diff">headline</span></h2>
+  <p class="h2sub">retire opens the path to gain — evolution ON 55.5 us vs OFF 319.1 us (A100, ×3 재현)</p>
+  <div class="card"><img src="charts/endpoint.svg" alt="evolution ON best 55.5us vs OFF best 319.1us, 5.75x, kb_matmul_scalar"/></div>
+  <p class="cap">scalar matmul서 <code>fp32_no_tensorcore</code> 오탐이 발화.
+     진화 <b>OFF</b>: 오탐에 영원히 갇혀 <b>319.1 us</b>.
+     진화 <b>ON</b>: 실패 누적 → <b>retire</b> → <code>uncoalesced</code> 발화(load_eff 41.7% 실측)
+     → 합착 타일 커널(<code>tl.dot ieee</code>=FFMA, 텐서코어 배제) → <b>55.5 us = 5.75×</b>.
+     양 트랙은 동일 콜백·동일 variant 풀, 차이는 evolver뿐.
+     <br/><b>"오탐 retire → 올바른 룰 → 더 빠른 커널" 인과사슬이 한 문제서 완결.</b> 3회 독립 재현(5.82/5.78/5.75×).</p>
+
+  <h2>자연 다문제 배치 — 루프는 어디서나, gain은 워크로드가 결정</h2>
+  <p class="h2sub">natural 4-problem KernelBench batch, one colab exec — zero cases where evolution hurt</p>
+  <p class="cap">kb_softmax·layernorm·reduce = <code>memory_saturated</code> 즉시 STOP(대역폭 천장, 헛라운드 0 = 올바른 정지),
+     kb_matmul_scalar = 위 ③의 retire→gain. 연출 큐 없이 자연 신호만. 표본 4(250문제 확장은 인프라 준비 완료).</p>
+
   <h2>세 축 각각 실증 / three axes, each demonstrated</h2>
   <ul>
-    <li><b>gain 축</b> — matmul 6.4× (A100, 위 ①)</li>
-    <li><b>진화 축</b> — reg_pressure retire (T4, 위 ②) + sigmoid 오탐 retire (A100)</li>
+    <li><b>gain 축</b> — matmul 6.4× + batched GEMM 4.5× (A100, 위 ①)</li>
+    <li><b>진화 축</b> — sigmoid·conv2d·scalar matmul 오탐 retire (A100) + reg_pressure retire (T4, 위 ②)</li>
     <li><b>칩 축</b> — 같은 신호, 칩 따라 다른 룰: A100=<code>fp32_no_tensorcore</code> 발화 vs T4=가드 차단
         (chip guard, <a href="README.md">아키텍처 다이어그램 참조</a>)</li>
+    <li><b>+ endpoint</b> — 진화 ON &lt; OFF 5.75× (위 ③) = 세 축을 잇는 최종 증거</li>
   </ul>
-  <p class="cap">미입증(future work): 다문제 gain 일반화, 한 문제서 두 축 동시(구조적 난제로 확인).</p>
+  <p class="cap">미입증(정직): 표본 4→250 확장(작업만 남음), "두 축을 한 사건으로"는 구조적으로 미주장(순차 인과사슬로 실증).</p>
 
   <footer>
-    데이터 = 실측 하드값 (A100 matmul 라운드, T4 8-round gain_compare 로그). 정직 유지: null 결과는 물리 천장으로 명시.<br/>
+    데이터 = 실측 하드값 (A100 matmul·batched GEMM·kb 4문제 배치 원장, T4 8-round gain_compare 로그). 정직 유지: null 결과는 물리 천장으로, STOP은 올바른 판정으로 명시.<br/>
     Source: <a href="https://github.com/alexxony/gpu-solver-loop">github.com/alexxony/gpu-solver-loop</a>
   </footer>
 
