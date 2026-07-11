@@ -27,7 +27,7 @@ from runner import run_problem
 from ledger import Ledger
 from rules import seed_rules
 from generator import CallbackGenerator
-from run_e2e import git_sync, MAILBOX, PROBLEMS
+from run_e2e import git_sync, MAILBOX, PROBLEMS, make_colab_profiler
 from run_gain_compare import TrackResult, _report
 
 

@@ -75,23 +75,34 @@ class ColabExecProfiler:
 
         colab exec는 -f FILE만 받고 stdin을 코드로 점유 → cmd는 wrapper에 임베드.
         --timeout 기본 30s는 측정에 부족 → self.timeout_s 명시.
+        전송 스톨 간헐 발생(동일 코드가 재시도서 정상) → 타임아웃/비영종료 시 3회까지 재시도.
+        측정은 멱등이라 재실행 안전. 소진 시 ColabExecError(라운드 스킵 신호).
         """
+        import sys as _sys
         import tempfile, os
         fd, path = tempfile.mkstemp(suffix=".py")
         try:
             os.write(fd, wrapper_code.encode())
             os.close(fd)
-            proc = subprocess.run(
-                ["colab", "exec", "-s", self.session, "-f", path,
-                 "--timeout", str(self.timeout_s)],
-                capture_output=True, text=True, timeout=self.timeout_s + 60,
-            )
+            last_err = ""
+            for attempt in range(1, 4):
+                try:
+                    proc = subprocess.run(
+                        ["colab", "exec", "-s", self.session, "-f", path,
+                         "--timeout", str(self.timeout_s)],
+                        capture_output=True, text=True, timeout=self.timeout_s + 60,
+                    )
+                except subprocess.TimeoutExpired:
+                    last_err = f"transport timeout {self.timeout_s}s (attempt {attempt}/3)"
+                    print(f"  [colab exec] {last_err} — 재시도", file=_sys.stderr)
+                    continue
+                if proc.returncode == 0:
+                    return proc.stdout
+                last_err = f"rc={proc.returncode}: {proc.stderr[-300:]} (attempt {attempt}/3)"
+                print(f"  [colab exec] {last_err} — 재시도", file=_sys.stderr)
+            raise ColabExecError(f"colab exec 재시도 소진: {last_err}")
         finally:
             os.unlink(path)
-        if proc.returncode != 0:
-            raise ColabExecError(
-                f"colab exec rc={proc.returncode}: {proc.stderr[-500:]}")
-        return proc.stdout
 
     def _dispatch(self, cmd: dict) -> dict:
         """cmd dict → wrapper 생성 → 원격 실행 → RES dict. 왕복 단일 지점."""
