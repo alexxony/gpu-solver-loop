@@ -113,6 +113,8 @@ Transport is **google-colab-cli** (official CLI): the rule engine is determinist
 judgment), so the entire ablation loop runs server-side in one `colab exec` — the local machine
 only ships code and collects a JSON ledger. The older git-mailbox transport is retained for history.
 
+Methodology details: [docs/METHOD.md](docs/METHOD.md)
+
 ## 4. Evidence — where to look
 
 ### 1. Measurement-feedback rule-evolution meta-loop — mechanism proven
