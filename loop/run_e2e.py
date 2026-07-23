@@ -71,14 +71,16 @@ def make_colab_profiler(argv):
 
 
 def main() -> int:
+    profiler, use_colab_cli, argv = make_colab_profiler(sys.argv[1:])
     ap = argparse.ArgumentParser()
     ap.add_argument("problem", nargs="?", default="llama",
                     help="problems/ 하위 폴더명 (llama/sigmoid/groupnorm)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     problem = args.problem
     solve_path = PROBLEMS / problem / "solve.py"
 
-    if not (MAILBOX / ".git").exists():
+    # colab-cli 직결이면 mailbox clone 불필요 (design 10).
+    if not use_colab_cli and not (MAILBOX / ".git").exists():
         print(f"ERR: mailbox clone 없음: {MAILBOX}", file=sys.stderr)
         return 2
     if not solve_path.exists():
@@ -86,14 +88,18 @@ def main() -> int:
         return 2
 
     seed = solve_path.read_text()
-    print(f"e2e 시작 — problem={problem} mailbox={MAILBOX} branch={BRANCH}")
-    print(f"  seed={solve_path} ({len(seed)} chars), ledger={LEDGER}")
-    print("  Colab watch 떠 있어야 함. REQ push → RES 대기...")
+    if use_colab_cli:
+        print(f"e2e 시작 — problem={problem} (colab exec 직결)")
+        print(f"  seed={solve_path} ({len(seed)} chars), ledger={LEDGER}")
+    else:
+        print(f"e2e 시작 — problem={problem} mailbox={MAILBOX} branch={BRANCH}")
+        print(f"  seed={solve_path} ({len(seed)} chars), ledger={LEDGER}")
+        print("  Colab watch 떠 있어야 함. REQ push → RES 대기...")
 
     # 고정 코드 → metric 정체 → 빠른 수렴. 1라운드면 배관 실증 충분.
     res = run_problem(problem, seed, MAILBOX, LEDGER,
                       sync_fn=git_sync, max_rounds=1,
-                      poll_s=5.0, timeout_s=900.0)
+                      poll_s=5.0, timeout_s=900.0, profiler=profiler)
 
     led = Ledger(str(LEDGER))
     recs = [r for r in led.records if r.problem == problem]
