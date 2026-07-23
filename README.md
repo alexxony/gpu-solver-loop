@@ -1,85 +1,48 @@
 # GPU-Solver
 
+> This README is the methodology narrative. For internals see [`loop/README.md`](loop/README.md).
+
+## 1. What this is
+
 An agentic GPU kernel-optimization loop where the **classification rule table itself evolves
 from profiling measurements**. On real A100 hardware: the evolution mechanism is proven by
 controlled ON/OFF ablation, performance gain is shown on two compute-bound problems
 (matmul **6.4×**, batched GEMM **4.5×**), and — the endpoint claim — **evolution ON reaches a
 5.75×-faster kernel than OFF on the same problem** (misfire retire → correct rule → gain,
-reproduced in 3 independent runs). A natural 4-problem KernelBench batch shows the loop judging
-each workload correctly (bandwidth-ceiling problems: honest immediate stop; headroom problem:
-retire→gain) with **zero cases where evolution made things worse**.
+reproduced by re-running the same procedure 3 times). A natural 4-problem KernelBench batch shows
+the loop judging each workload correctly (bandwidth-ceiling problems: honest immediate stop;
+headroom problem: retire→gain) with **zero cases where evolution made things worse**.
 
-> This README is the methodology narrative. For internals see [`loop/README.md`](loop/README.md).
-
-## One line
+## 2. Why this is needed
 
 Prior art (CUDAMaster, arXiv 2603.07169) already implements the "deterministic rule label →
-LLM rewrite → measure-verify" pipeline. **My contribution = the classification rule table itself
-evolves from measurement feedback.** All 6 surveyed prior systems use static rules.
+LLM rewrite → measure-verify" pipeline — that part is not new. All 6 surveyed prior systems
+(including CUDAMaster and AutoKernel) use a **static** rule table: the LLM decides which
+hypothesis to try, and the rule set that drives that decision never changes.
 
-## Roadmap
+**My contribution is narrow and specific: the classification rule table itself evolves from
+measurement feedback.** A rule that keeps failing gets retired from measurement, not from an
+LLM's judgment call — bottleneck classification stays rule-based, deterministic, auditable, and
+reproducible; the LLM is used only for code rewriting, never for judging whether a hypothesis
+is right. This is a meta-loop no surveyed system implements, and it is the entire scope of the
+claim — no broader novelty is asserted.
 
-Eight phases from measurement base to generalization. **P0–P5 and P7 done** (green), **P6 in
-progress** (yellow). The three axes (gain · evolution · chip) branch at P5 — each proven separately,
-then joined at P7 by the endpoint ablation (evolution ON beats OFF on one problem).
+This project is one of three sibling projects that share the same optimization-loop discipline
+applied to different objective functions: [compiler-thermal](https://github.com/alexxony/compiler-thermal)
+forks this engine unchanged and swaps the objective for RC-model ΔT (thermal-aware compilation),
+and [hbm-build](https://github.com/alexxony/hbm-build) provides the Ansys Icepak thermal
+ground-truth this stack calibrates against. All three independently follow the same discipline —
+ON/OFF ablation, immediate ledger recording, honest negative-result reporting — documented per
+repo (this repo: `JOURNAL.md` + sections 4-5 below).
 
-```mermaid
-flowchart LR
-    P0["P0 Measurement base<br/>ncu/nsys signals"] --> P1["P1 Manual PoC<br/>6R cumulative 3.86×"]
-    P1 --> P2["P2 Differentiator<br/>rulebase evolution = unique"]
-    P2 --> P3["P3 Automation infra<br/>mailbox → colab-cli"]
-    P3 --> P4["P4 Mechanism proof<br/>evolution ON/OFF retire"]
-    P4 --> P5["P5 Three axes<br/>gain·evolution·chip"]
-    P5 --> P6["P6 Portfolio polish<br/>narrative·viz·glossary"]
-    P6 --> P7["P7 Generalization<br/>gain ×2 · endpoint ON beats OFF · 4-problem batch"]
+## 3. How it works
 
-    P5 --> A1["gain axis<br/>matmul 6.4× + batched GEMM 4.5×"]
-    P5 --> A2["evolution axis<br/>sigmoid+conv+scalar-matmul retire"]
-    P5 --> A3["chip axis<br/>T4 guard-block"]
-
-    classDef done fill:#d5e8d4,stroke:#82b366,stroke-width:2px;
-    classDef wip fill:#fff2cc,stroke:#d6b656,stroke-width:2px;
-    classDef axis fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px;
-    class P0,P1,P2,P3,P4,P5,P7 done
-    class P6 wip
-    class A1,A2,A3 axis
-```
-
-> 🟢 done · 🟡 in progress. Currently at P6 (portfolio polish); P7's endpoint claim landed first.
-
-## Architecture
+![Architecture](charts/architecture.svg)
 
 One round = generate → gate → profile → match (hypothesis) → ledger → evolve. **The differentiator
-is the feedback from `evolve` back into the rule table** (retire / promote / propose) — the rule table
-itself evolves from measurement. Surveyed prior systems lack this feedback edge (static rules).
-
-```mermaid
-flowchart TD
-    seed([seed kernel / prev variant]) --> gen[Generator<br/>LLM rewrite]
-    gen --> gate{Gate<br/>correctness}
-    gate -->|FAIL| regen[regenerate round] --> gen
-    gate -->|PASS| prof[Profiler<br/>ncu signals]
-    prof --> sig[/Signal<br/>compute_tput·bw·occ·tc·reg/]
-    sig --> match[Hypothesis Engine<br/>match sig × rules × ctx]
-    ctx[/Context<br/>chip·lang guard/] -.chip capability.-> match
-    match --> hyp[fired rule = next hypothesis]
-    hyp --> ledger[(Ledger<br/>round history)]
-    ledger --> evolve[Rule Evolver<br/>success·fail accrual]
-    evolve -->|improved| promote[promote<br/>confidence ↑]
-    evolve -->|repeated fail| retire[retire<br/>drop wrong rule]
-    evolve -->|unexplained gain| propose[propose<br/>candidate rule]
-    promote -.feedback.-> rules[(Rule table)]
-    retire -.feedback.-> rules
-    propose -.feedback.-> rules
-    rules --> match
-    hyp -->|is_stop| done([saturated → honest stop])
-    hyp -->|continue| gen
-
-    classDef diff fill:#ffe6cc,stroke:#d79b00,stroke-width:2px;
-    class evolve,retire,promote,propose,rules diff
-```
-
-> 🟠 Orange = the differentiator (rule-evolution feedback). Prior art has no edge into `rules`.
+is the feedback from `evolve` back into the rule table** (retire / promote / propose) — the rule
+table itself evolves from measurement. Surveyed prior systems lack this feedback edge (static
+rules); above, the orange edges into `rules` are exactly what static-rule prior art cannot do.
 
 ### Environment as a first-class rule input (chip guard)
 
@@ -107,7 +70,50 @@ flowchart TD
     class t1,t2,t3,t4 guard
 ```
 
-## What I proved (claimable)
+### Repository layout
+
+```
+loop/                  # the optimization loop (separate concerns, self-checkable)
+  signals.py           # profiling-signal extraction (bw_pct, tensorcore_active, ...)
+  rules.py             # classification rule table (seed rules)
+  evolver.py           # rule evolution: confidence ±1, retire, candidate proposal
+  ledger.py            # round/decision history
+  generator.py         # LLM kernel rewrite (callback for PoC; real generator behind API key)
+  harness.py           # optimization round driver
+  executor.py          # kernel run / measurement
+  colab_profiler.py    # colab-cli transport (single blocking `colab exec`, retry-hardened)
+  run_gain_compare.py  # evolution ON/OFF ablation (the mechanism proof)
+  run_gain_hypcond.py  # hypothesis-conditional callback driver (the endpoint proof)
+  run_ablation_remote.py # whole-batch remote ablation: N problems × ON/OFF in ONE colab exec,
+                       #   self-healing session (auto re-provision on Colab reclaim)
+  run_multiproblem.py  # multi-problem rule-firing observation
+  selfcheck.py         # GPU-free local self-check
+  mailbox.py, watch.py # legacy git-mailbox transport (replaced by colab-cli; kept for history)
+problems/{llama,sigmoid,groupnorm,matmul,matmul_tri,2d_convolution,batched_gemm,
+          kb_softmax,kb_layernorm,kb_reduce,kb_matmul_scalar}/solve.py
+colab_mailbox.ipynb    # legacy Colab watch notebook
+```
+
+### Run
+
+```bash
+# GPU-free local self-check (logic only — no torch/ncu)
+python3 loop/selfcheck.py
+
+# whole-batch ablation: N problems × evolution ON/OFF in ONE colab exec (recommended)
+# needs google-colab-cli authenticated (`uv tool install google-colab-cli`, one OAuth)
+python3 loop/run_ablation_remote.py kb_softmax,kb_layernorm,kb_reduce,kb_matmul_scalar 12 \
+    --session=abl --gpu=A100     # --gpu enables self-healing session re-provision
+
+# per-round variant: evolution ON/OFF via colab-cli round-trips
+python3 loop/run_gain_compare.py <problem> --colab-cli --session=<s>
+```
+
+Transport is **google-colab-cli** (official CLI): the rule engine is deterministic (zero LLM in
+judgment), so the entire ablation loop runs server-side in one `colab exec` — the local machine
+only ships code and collects a JSON ledger. The older git-mailbox transport is retained for history.
+
+## 4. Evidence — where to look
 
 ### 1. Measurement-feedback rule-evolution meta-loop — mechanism proven
 
@@ -146,7 +152,7 @@ ceilings (memory-bound); llama is attention-dominated — not a loop defect, a p
 ### 4. Evolution ON beats OFF at the endpoint — the headline claim
 
 **Evidence (real A100, kb_matmul_scalar, `loop/run_gain_hypcond.py` / `run_ablation_remote.py`,
-reproduced in 3 independent runs: 5.82× / 5.78× / 5.75×):**
+same procedure re-run 3 times: 5.82× / 5.78× / 5.75×):**
 - **OFF**: the misfiring `fp32_no_tensorcore` rule fires forever, its faithful prescription (TF32)
   is physically inert on a hand-written scalar Triton kernel → best stays at **~319us**.
 - **ON**: the same misfire accumulates failures → **retire** → the next eligible rule `uncoalesced`
@@ -175,77 +181,82 @@ reproduced in 3 independent runs: 5.82× / 5.78× / 5.75×):**
 | kb_matmul_scalar | misfire → retire → `uncoalesced` | **ON 55.5us < OFF 319.1us = 5.75×** |
 
 No staged queues — natural signals only. **Zero cases where evolution made things worse.**
-The loop runs everywhere; gain is decided by the workload, not the loop. (Sample = 4; the
-batch driver scales to the KernelBench 250-problem set as seed-wrapping work.)
-
-## What I did NOT prove
-
-- ⚠️ **Sample size.** The natural batch is 4 problems (1 headroom + 3 bandwidth-ceiling). The batch
-  driver (`run_ablation_remote.py`, one `colab exec` per batch) scales to the KernelBench 250-problem
-  set; that expansion is seed-wrapping work, not new mechanism.
-- ⚠️ **"Both axes as one event" is not claimed.** Retire (rule A's event) and gain (rule B's event) are
-  sequential by construction — the harness attributes each round's outcome to the single fired rule. What
-  is proven is the *endpoint of the causal chain* (ON reaches a faster kernel than OFF); single-event
-  simultaneity was twice confirmed structurally out of reach and is deliberately not engineered around.
-- ⚠️ **No SOTA performance claim.** The differentiator is interpretable, auditable, evolving judgment
-  (zero-LLM bottleneck classification) — orthogonal to absolute kernel performance.
+The loop runs everywhere; gain is decided by the workload, not the loop.
 
 <p align="center"><img src="charts/retire.svg" alt="evolution ON retires the false rule at round 4 (retire=1); OFF never retires (retire=0); latency flat on both" width="560"/></p>
 
 > T4 evidence above: the difference is the **retire**, not the latency — both tracks stay flat at the
-> T4 fp32 ceiling. The same retire mechanism later opens the gain path on A100 (section 4). This
+> T4 fp32 ceiling. The same retire mechanism later opens the gain path on A100 (section above). This
 > "a rule gets dropped by measurement" step is exactly what static-rule prior art cannot do.
 
-## Repository layout
+### Reproduce
 
-```
-loop/                  # the optimization loop (separate concerns, self-checkable)
-  signals.py           # profiling-signal extraction (bw_pct, tensorcore_active, ...)
-  rules.py             # classification rule table (seed rules)
-  evolver.py           # rule evolution: confidence ±1, retire, candidate proposal
-  ledger.py            # round/decision history
-  generator.py         # LLM kernel rewrite (callback for PoC; real generator behind API key)
-  harness.py           # optimization round driver
-  executor.py          # kernel run / measurement
-  colab_profiler.py    # colab-cli transport (single blocking `colab exec`, retry-hardened)
-  run_gain_compare.py  # evolution ON/OFF ablation (the mechanism proof)
-  run_gain_hypcond.py  # hypothesis-conditional callback driver (the endpoint proof)
-  run_ablation_remote.py # whole-batch remote ablation: N problems × ON/OFF in ONE colab exec,
-                       #   self-healing session (auto re-provision on Colab reclaim)
-  run_multiproblem.py  # multi-problem rule-firing observation
-  selfcheck.py         # GPU-free local self-check
-  mailbox.py, watch.py # legacy git-mailbox transport (replaced by colab-cli; kept for history)
-problems/{llama,sigmoid,groupnorm,matmul,matmul_tri,2d_convolution,batched_gemm,
-          kb_softmax,kb_layernorm,kb_reduce,kb_matmul_scalar}/solve.py
-colab_mailbox.ipynb    # legacy Colab watch notebook
-```
-
-## Run
+Every headline number in this README is reproducible with one command on a Colab A100. All
+claims trace to ledger rows (JSON, written both locally and remotely):
 
 ```bash
-# GPU-free local self-check (logic only — no torch/ncu)
-python3 loop/selfcheck.py
-
-# whole-batch ablation: N problems × evolution ON/OFF in ONE colab exec (recommended)
-# needs google-colab-cli authenticated (`uv tool install google-colab-cli`, one OAuth)
+# Endpoint 5.75× + 4-problem batch (re-run 3× to reproduce 5.82×/5.78×/5.75×)
 python3 loop/run_ablation_remote.py kb_softmax,kb_layernorm,kb_reduce,kb_matmul_scalar 12 \
-    --session=abl --gpu=A100     # --gpu enables self-healing session re-provision
+    --session=abl --gpu=A100
 
-# per-round variant: evolution ON/OFF via colab-cli round-trips
-python3 loop/run_gain_compare.py <problem> --colab-cli --session=<s>
+# Gain axis (matmul / batched GEMM)
+python3 loop/run_gain_compare.py matmul --latency --colab-cli --session=<s>
+python3 loop/run_gain_compare.py batched_gemm --latency --colab-cli --session=<s>
 ```
 
-Transport is **google-colab-cli** (official CLI): the rule engine is deterministic (zero LLM in
-judgment), so the entire ablation loop runs server-side in one `colab exec` — the local machine
-only ships code and collects a JSON ledger. The older git-mailbox transport is retained for history.
+## 5. Limits / not proven
 
-## Reproducibility
+- **Sample size is small.** The natural multi-problem batch is 4 problems (1 headroom + 3
+  bandwidth-ceiling). The batch driver (`run_ablation_remote.py`, one `colab exec` per batch)
+  already scales to the KernelBench 250-problem set — that infrastructure is in place and tested;
+  running the full 250-problem batch is seed-wrapping work, not new mechanism, and has not been done.
+- **"Both axes as one event" is not claimed.** Retire (rule A's event) and gain (rule B's event) are
+  sequential by construction — the harness attributes each round's outcome to the single fired rule.
+  What is proven is the *endpoint of the causal chain* (ON reaches a faster kernel than OFF);
+  single-event simultaneity was twice confirmed structurally out of reach and is deliberately not
+  engineered around.
+- **No SOTA performance claim.** The differentiator is interpretable, auditable, evolving judgment
+  (zero-LLM bottleneck classification) — orthogonal to absolute kernel performance.
+- **"Reproduced 3 independent runs" means the same procedure re-run 3 times**, not verification by
+  an isolated second party working from raw artifacts alone. There is no separate-verifier /
+  pre-registration workflow documented in this repository (its siblings `compiler-thermal` and
+  `hbm-build` do document one); the 5.75×/5.78×/5.82× spread is procedure-repeatability evidence,
+  not independent-reviewer evidence.
+- **Rule-firing correctness has not been adversarially tested** — the rule table has been exercised
+  on the problems above, not stress-tested against adversarial or out-of-distribution kernels.
 
-Every headline number in this README is reproducible with one command on a Colab A100:
-- Endpoint 5.75× + 4-problem batch: the `run_ablation_remote.py` line above (reproduced 3×).
-- Gain axis: `run_gain_compare.py matmul|batched_gemm --latency --colab-cli --session=<s>`.
-- Ledgers (per-round JSON) are written locally and remotely; all claims trace to ledger rows.
+## 6. Status
+
+Eight phases from measurement base to generalization. **P0–P5 and P7 done**, **P6 (portfolio
+polish) in progress**. The three axes (gain · evolution · chip) branch after the mechanism proof
+and are joined by the endpoint ablation (evolution ON beats OFF on one problem).
+
+```mermaid
+flowchart LR
+    P0["Measurement base<br/>ncu/nsys signals"] --> P1["Manual PoC<br/>6R cumulative 3.86×"]
+    P1 --> P2["Differentiator identified<br/>rulebase evolution = unique"]
+    P2 --> P3["Automation infra<br/>mailbox → colab-cli"]
+    P3 --> P4["Mechanism proof<br/>evolution ON/OFF retire"]
+    P4 --> P5["Three axes<br/>gain·evolution·chip"]
+    P5 --> P6["Portfolio polish<br/>narrative·viz·glossary"]
+    P6 --> P7["Generalization<br/>gain ×2 · endpoint ON beats OFF · 4-problem batch"]
+
+    P5 --> A1["gain axis<br/>matmul 6.4× + batched GEMM 4.5×"]
+    P5 --> A2["evolution axis<br/>sigmoid+conv+scalar-matmul retire"]
+    P5 --> A3["chip axis<br/>T4 guard-block"]
+
+    classDef done fill:#d5e8d4,stroke:#82b366,stroke-width:2px;
+    classDef wip fill:#fff2cc,stroke:#d6b656,stroke-width:2px;
+    classDef axis fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px;
+    class P0,P1,P2,P3,P4,P5,P7 done
+    class P6 wip
+    class A1,A2,A3 axis
+```
+
+> 🟢 done · 🟡 in progress. Currently in portfolio-polish; the generalization phase's endpoint
+> claim (section 4.4) landed first. Next: expand the natural batch beyond 4 problems toward the
+> KernelBench 250-problem set (infrastructure ready, not yet run).
 
 ## License
 
-Personal portfolio / research prototype.
+MIT. See [`LICENSE`](LICENSE).
