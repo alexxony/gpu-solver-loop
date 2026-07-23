@@ -5,86 +5,255 @@
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>GPU-Solver — self-evolving GPU kernel optimizer</title>
 <style>
-  :root { --fg:#1a1a1a; --mut:#666; --accent:#bf9000; --card:#fafafa; --line:#e5e5e5; }
+  :root {
+    --fg:#1a1a1a; --mut:#5c5c5c; --accent:#b8860b; --card:#fafafa; --line:#e2e2e2;
+    --bg:#ffffff; --pill-bg:#fff3cc; --pill-line:#e6c26a; --code-bg:#f0f0f0;
+    --on:#2f7a3d; --off:#8a1f1f; --on-bg:#e7f5ea; --off-bg:#fbeaea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg:#e8e8e8; --mut:#a3a3a3; --accent:#e0b23d; --card:#1b1b1b; --line:#333;
+      --bg:#111; --pill-bg:#3a3110; --pill-line:#6b5a1c; --code-bg:#232323;
+      --on:#5fd97a; --off:#f28b8b; --on-bg:#173321; --off-bg:#3a1c1c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --fg:#e8e8e8; --mut:#a3a3a3; --accent:#e0b23d; --card:#1b1b1b; --line:#333;
+    --bg:#111; --pill-bg:#3a3110; --pill-line:#6b5a1c; --code-bg:#232323;
+    --on:#5fd97a; --off:#f28b8b; --on-bg:#173321; --off-bg:#3a1c1c;
+  }
+  :root[data-theme="light"] {
+    --fg:#1a1a1a; --mut:#5c5c5c; --accent:#b8860b; --card:#fafafa; --line:#e2e2e2;
+    --bg:#ffffff; --pill-bg:#fff3cc; --pill-line:#e6c26a; --code-bg:#f0f0f0;
+    --on:#2f7a3d; --off:#8a1f1f; --on-bg:#e7f5ea; --off-bg:#fbeaea;
+  }
   * { box-sizing:border-box; }
-  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; color:var(--fg); line-height:1.6; background:#fff; }
-  .wrap { max-width:820px; margin:0 auto; padding:48px 24px 80px; }
-  h1 { font-size:30px; margin:0 0 6px; }
-  .sub { color:var(--mut); font-size:15px; margin:0 0 32px; }
-  h2 { font-size:21px; margin:44px 0 4px; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; color:var(--fg); line-height:1.6; background:var(--bg); }
+  .wrap { max-width:760px; margin:0 auto; padding:44px 20px 64px; }
+
+  /* ---- top ---- */
+  h1 { font-size:28px; margin:0 0 8px; letter-spacing:-0.01em; }
+  .lede { color:var(--mut); font-size:16px; margin:0 0 22px; max-width:60ch; }
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:0 0 24px; }
+  .stat { border:1px solid var(--line); border-radius:10px; padding:14px 12px; text-align:center; background:var(--card); }
+  .stat .num { font-size:22px; font-weight:700; color:var(--accent); line-height:1.2; }
+  .stat .lbl { font-size:12px; color:var(--mut); margin-top:3px; }
+  .arch { border:1px solid var(--line); border-radius:10px; padding:14px; background:var(--card); margin:0 0 8px; }
+  .arch img { width:100%; height:auto; display:block; }
+  .arch-cap { font-size:12.5px; color:var(--mut); text-align:center; margin:8px 0 0; }
+
+  /* ---- sections ---- */
+  section { margin-top:46px; }
+  h2 { font-size:20px; margin:0 0 4px; }
   .h2sub { color:var(--mut); font-size:13.5px; margin:0 0 16px; }
-  .card { border:1px solid var(--line); border-radius:10px; background:var(--card); padding:18px; margin:8px 0 4px; }
+  .card { border:1px solid var(--line); border-radius:10px; background:var(--card); padding:16px; margin:0 0 4px; }
   .card img { width:100%; height:auto; display:block; }
   .cap { font-size:13px; color:var(--mut); margin:10px 2px 0; }
   .cap b { color:var(--fg); }
-  .diff { display:inline-block; background:#fff3cc; color:var(--accent); font-weight:700; font-size:12px; padding:2px 9px; border-radius:11px; border:1px solid #f1c232; vertical-align:middle; }
-  ul { padding-left:20px; }
-  code { background:#f0f0f0; padding:1px 5px; border-radius:4px; font-size:13px; }
-  footer { margin-top:56px; padding-top:20px; border-top:1px solid var(--line); font-size:13px; color:var(--mut); }
-  a { color:#1155cc; }
+  code { background:var(--code-bg); padding:1px 5px; border-radius:4px; font-size:12.5px; }
+  a { color:#3172d8; }
+  @media (prefers-color-scheme: dark) { a { color:#7aa6e8; } }
+  :root[data-theme="dark"] a { color:#7aa6e8; }
+  :root[data-theme="light"] a { color:#3172d8; }
+
+  /* ---- toggle interaction ---- */
+  .toggle-box { border:1px solid var(--line); border-radius:12px; background:var(--card); padding:20px; }
+  .toggle-row { display:flex; align-items:center; gap:14px; margin-bottom:16px; flex-wrap:wrap; }
+  .switch { position:relative; display:inline-block; width:56px; height:30px; flex:0 0 auto; }
+  .switch input { opacity:0; width:0; height:0; }
+  .slider { position:absolute; cursor:pointer; inset:0; background:var(--off); border-radius:30px; transition:.25s; }
+  .slider::before { content:""; position:absolute; height:24px; width:24px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.25s; }
+  .switch input:checked + .slider { background:var(--on); }
+  .switch input:checked + .slider::before { transform:translateX(26px); }
+  .toggle-label { font-weight:700; font-size:15px; }
+  .toggle-state { font-size:13px; color:var(--mut); }
+  .rule-table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  .rule-table th, .rule-table td { border:1px solid var(--line); padding:8px 10px; text-align:left; }
+  .rule-table th { background:var(--code-bg); font-weight:600; }
+  .rule-row { transition:background .3s, opacity .3s; }
+  .rule-row.retired { opacity:0.45; text-decoration:line-through; }
+  .rule-row.active-fire { background:var(--on-bg); }
+  .badge { display:inline-block; font-size:11px; font-weight:700; padding:1px 8px; border-radius:9px; }
+  .badge.retire { background:var(--off-bg); color:var(--off); }
+  .badge.fire { background:var(--on-bg); color:var(--on); }
+  .badge.stuck { background:var(--off-bg); color:var(--off); }
+  .result-line { margin-top:14px; padding-top:14px; border-top:1px dashed var(--line); font-size:14px; }
+  .result-line .best { font-weight:700; }
+  .result-line.on .best { color:var(--on); }
+  .result-line.off .best { color:var(--off); }
+
+  /* ---- limits ---- */
+  .limits { border:1px solid var(--line); border-radius:10px; background:var(--card); padding:16px 18px; }
+  .limits ul { margin:0; padding-left:20px; font-size:14px; }
+  .limits li { margin:8px 0; }
+
+  /* ---- footer ---- */
+  footer { margin-top:52px; padding-top:20px; border-top:1px solid var(--line); font-size:13.5px; color:var(--mut); }
+  .neighbors { display:flex; gap:10px; flex-wrap:wrap; margin:12px 0 4px; }
+  .neighbors a { border:1px solid var(--line); border-radius:8px; padding:8px 12px; text-decoration:none; color:var(--fg); font-size:13.5px; background:var(--card); }
+  .neighbors a:hover { border-color:var(--accent); }
+  .neighbors .tag { color:var(--mut); }
 </style>
 </head>
 <body>
 <div class="wrap">
 
   <h1>GPU-Solver</h1>
-  <p class="sub">측정 피드백으로 <b>분류 규칙 자체가 진화</b>하는 GPU 커널 최적화 루프<br/>
-     A GPU-kernel optimization loop whose <b>classification rules evolve from measurement feedback</b></p>
+  <p class="lede">A GPU-kernel optimization loop whose <b>classification rule table evolves from measurement feedback</b> —
+     a rule that keeps failing is retired by measurement, not by an LLM's judgment call.</p>
 
-  <p>루프 한 바퀴 = <code>generate → gate → profile → hypothesize → measure → evolve</code>.
-     차별점은 마지막 단계: 측정이 룰을 되먹여 <b>오탐 룰을 폐기(retire)</b>하고 맞는 룰의 신뢰도를 올린다.
-     CUDAMaster 등 선행 시스템은 이 되먹임이 없다(룰표 정적).
-     <span class="diff">rule DB evolution = 유일 차별점</span></p>
+  <div class="stats">
+    <div class="stat"><div class="num">6.4×</div><div class="lbl">matmul gain (fp32 → TF32, A100)</div></div>
+    <div class="stat"><div class="num">5.75×</div><div class="lbl">evolution ON vs OFF, endpoint</div></div>
+    <div class="stat"><div class="num">0</div><div class="lbl">cases evolution made things worse</div></div>
+  </div>
 
-  <h2>① 성능 gain — matmul 6.4×</h2>
-  <p class="h2sub">측정→가설→재작성→더 빠른 커널 / measure → hypothesize → rewrite → faster kernel (A100)</p>
-  <div class="card"><img src="charts/gain.svg" alt="matmul fp32 9.6ms to TF32 1.5ms, 6.4x speedup"/></div>
-  <p class="cap">fp32 <code>ampere_sgemm</code> 9.6 ms → TF32 <code>cutlass_tensorop</code> 1.5 ms.
-     루프가 <code>fp32_no_tensorcore</code> 룰을 발화 → TF32 코드 선택 → <b>6.4× 실측</b>.
-     커널명이 달라짐(sgemm ≠ tensorop) = 플래그 조작이 아니라 진짜 다른 커널 선택.
-     <br/><b>The loop selected a genuinely different kernel — not a flag tweak.</b>
-     동일 계약으로 batched GEMM에서도 <b>4.5×</b>(2631→580 us) — gain 축 2문제.</p>
+  <div class="arch">
+    <img src="charts/architecture.svg" alt="Architecture: generate, gate, profile, match, ledger, evolve loop; orange feedback edges from evolve back into the rule table"/>
+  </div>
+  <p class="arch-cap">One round = generate → gate → profile → match → ledger → evolve. The orange edges
+     feeding back into <code>rules</code> are the feedback edge static-rule prior art doesn't have.</p>
 
-  <h2>② 룰 진화 — 측정으로 오탐 룰 폐기</h2>
-  <p class="h2sub">rules retire on measurement — what prior systems can't do (T4, 8 rounds)</p>
-  <div class="card"><img src="charts/retire.svg" alt="evolution ON retires false rule at round 4, OFF never retires"/></div>
-  <p class="cap">T4에서 <code>reg_pressure</code> 오탐이 8라운드 발화.
-     진화 <b>ON</b>: 4라운드째 측정 누적으로 <b>retire=1</b> → 다음 적격 룰로 전환.
-     진화 <b>OFF</b>: <b>retire=0</b>, 영원히 오탐 반복.
-     <br/>⚠ latency는 두 트랙 모두 평평(48.4 ms, T4 fp32 천장) = gain 아님.
-     <b>차이는 오직 retire에서만 — 이게 선행이 못 하는 것.</b>
-     <br/><b>The difference is the retire, not speed.</b></p>
+  <section>
+    <h2>Try it: evolution ON vs OFF</h2>
+    <p class="h2sub">Same variant pool, same problem (<code>kb_matmul_scalar</code>, real A100 run). Only the evolver differs.</p>
 
-  <h2>③ 진화 ON이 OFF보다 빠른 커널에 도달 — endpoint 실증 <span class="diff">headline</span></h2>
-  <p class="h2sub">retire opens the path to gain — evolution ON 55.5 us vs OFF 319.1 us (A100, ×3 재현)</p>
-  <div class="card"><img src="charts/endpoint.svg" alt="evolution ON best 55.5us vs OFF best 319.1us, 5.75x, kb_matmul_scalar"/></div>
-  <p class="cap">scalar matmul서 <code>fp32_no_tensorcore</code> 오탐이 발화.
-     진화 <b>OFF</b>: 오탐에 영원히 갇혀 <b>319.1 us</b>.
-     진화 <b>ON</b>: 실패 누적 → <b>retire</b> → <code>uncoalesced</code> 발화(load_eff 41.7% 실측)
-     → 합착 타일 커널(<code>tl.dot ieee</code>=FFMA, 텐서코어 배제) → <b>55.5 us = 5.75×</b>.
-     양 트랙은 동일 콜백·동일 variant 풀, 차이는 evolver뿐.
-     <br/><b>"오탐 retire → 올바른 룰 → 더 빠른 커널" 인과사슬이 한 문제서 완결.</b> 3회 독립 재현(5.82/5.78/5.75×).</p>
+    <div class="toggle-box">
+      <div class="toggle-row">
+        <label class="switch">
+          <input type="checkbox" id="evoToggle" checked/>
+          <span class="slider"></span>
+        </label>
+        <span class="toggle-label">Evolution</span>
+        <span class="toggle-state" id="toggleState">ON — rule table updates from measurement</span>
+      </div>
 
-  <h2>자연 다문제 배치 — 루프는 어디서나, gain은 워크로드가 결정</h2>
-  <p class="h2sub">natural 4-problem KernelBench batch, one colab exec — zero cases where evolution hurt</p>
-  <p class="cap">kb_softmax·layernorm·reduce = <code>memory_saturated</code> 즉시 STOP(대역폭 천장, 헛라운드 0 = 올바른 정지),
-     kb_matmul_scalar = 위 ③의 retire→gain. 연출 큐 없이 자연 신호만. 표본 4(250문제 확장은 인프라 준비 완료).</p>
+      <table class="rule-table">
+        <thead>
+          <tr><th>Round</th><th>Rule fired</th><th>Signal</th><th>Outcome</th></tr>
+        </thead>
+        <tbody id="ruleBody">
+          <!-- filled by JS -->
+        </tbody>
+      </table>
 
-  <h2>세 축 각각 실증 / three axes, each demonstrated</h2>
-  <ul>
-    <li><b>gain 축</b> — matmul 6.4× + batched GEMM 4.5× (A100, 위 ①)</li>
-    <li><b>진화 축</b> — sigmoid·conv2d·scalar matmul 오탐 retire (A100) + reg_pressure retire (T4, 위 ②)</li>
-    <li><b>칩 축</b> — 같은 신호, 칩 따라 다른 룰: A100=<code>fp32_no_tensorcore</code> 발화 vs T4=가드 차단
-        (chip guard, <a href="README.md">아키텍처 다이어그램 참조</a>)</li>
-    <li><b>+ endpoint</b> — 진화 ON &lt; OFF 5.75× (위 ③) = 세 축을 잇는 최종 증거</li>
-  </ul>
-  <p class="cap">미입증(정직): 표본 4→250 확장(작업만 남음), "두 축을 한 사건으로"는 구조적으로 미주장(순차 인과사슬로 실증).</p>
+      <div class="result-line on" id="resultLine">
+        Best latency: <span class="best">55.5 µs</span> — misfire retired at round 4, <code>uncoalesced</code> fired next (load_eff 41.7% measured), tensor cores excluded (FFMA).
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Gain axis — matmul 6.4×</h2>
+    <p class="h2sub">measure → hypothesize → rewrite → faster kernel (A100)</p>
+    <div class="card"><img src="charts/gain.svg" alt="matmul fp32 9.6ms to TF32 1.5ms, 6.4x speedup"/></div>
+    <p class="cap">fp32 <code>ampere_sgemm</code> 9.6 ms → TF32 <code>cutlass_tensorop</code> 1.5 ms = <b>6.4×</b>.
+       Kernel name changed (sgemm ≠ tensorop) — a genuinely different kernel was selected, not a flag flip.
+       Same contract on batched GEMM: <b>4.5×</b> (2631 → 580 µs).</p>
+  </section>
+
+  <section>
+    <h2>Endpoint — evolution ON beats OFF</h2>
+    <p class="h2sub">retire opens the path to gain — reproduced 3× (5.82× / 5.78× / 5.75×)</p>
+    <div class="card"><img src="charts/endpoint.svg" alt="evolution ON best 55.5us vs OFF best 319.1us, 5.75x, kb_matmul_scalar"/></div>
+    <p class="cap">Evolution <b>OFF</b> stays trapped on a misfiring rule forever: <b>319.1 µs</b>.
+       Evolution <b>ON</b>: failures accumulate → <b>retire</b> → next eligible rule fires → <b>55.5 µs = 5.75×</b>.
+       Same callback, same variant pool — the only difference is the evolver.</p>
+  </section>
+
+  <section>
+    <h2>Rule retirement — the mechanism itself</h2>
+    <p class="h2sub">evolution ON retires the false rule at round 4; OFF never retires (T4, 8 rounds)</p>
+    <div class="card"><img src="charts/retire.svg" alt="evolution ON retires the false rule at round 4 (retire=1); OFF never retires (retire=0); latency flat on both"/></div>
+    <p class="cap">Latency is flat on <i>both</i> tracks (T4 fp32 ceiling) — the difference is the retire itself,
+       not speed. This is the step static-rule prior art structurally cannot do.</p>
+  </section>
+
+  <section>
+    <h2>Limits / not proven</h2>
+    <div class="limits">
+      <ul>
+        <li><b>Sample size is small.</b> The natural multi-problem batch is 4 problems (1 headroom + 3
+            bandwidth-ceiling). The batch driver already scales to KernelBench's 250-problem set —
+            running it is seed-wrapping work, not new mechanism, and has not been done.</li>
+        <li><b>"Both axes as one event" is not claimed.</b> Retire (rule A's event) and gain (rule B's
+            event) are sequential by construction. What's proven is the endpoint of the causal chain,
+            not simultaneity.</li>
+        <li><b>No SOTA performance claim.</b> The differentiator is interpretable, auditable, evolving
+            judgment — orthogonal to absolute kernel performance.</li>
+        <li><b>"Reproduced 3 runs" means the same procedure re-run 3 times</b>, not verification by an
+            isolated second party from raw artifacts alone.</li>
+        <li><b>Rule-firing correctness has not been adversarially tested</b> against out-of-distribution
+            kernels.</li>
+      </ul>
+    </div>
+  </section>
 
   <footer>
-    데이터 = 실측 하드값 (A100 matmul·batched GEMM·kb 4문제 배치 원장, T4 8-round gain_compare 로그). 정직 유지: null 결과는 물리 천장으로, STOP은 올바른 판정으로 명시.<br/>
     Source: <a href="https://github.com/alexxony/gpu-solver-loop">github.com/alexxony/gpu-solver-loop</a>
+    · Full methodology: <a href="https://github.com/alexxony/gpu-solver-loop/blob/master/README.md">README</a>
+    <div class="neighbors">
+      <a href="https://github.com/alexxony/compiler-thermal">compiler-thermal <span class="tag">— thermal-aware compilation, same loop</span></a>
+      <a href="https://github.com/alexxony/hbm-build">hbm-build <span class="tag">— Icepak thermal ground truth</span></a>
+    </div>
   </footer>
 
 </div>
+
+<script>
+(function () {
+  var toggle = document.getElementById('evoToggle');
+  var stateLabel = document.getElementById('toggleState');
+  var ruleBody = document.getElementById('ruleBody');
+  var resultLine = document.getElementById('resultLine');
+
+  // real measured rows: loop/run_gain_hypcond.py, kb_matmul_scalar, A100
+  var rowsOn = [
+    { round: '1–3', rule: 'fp32_no_tensorcore', signal: 'tc=False, occ low', outcome: 'misfire ×3', cls: '' },
+    { round: '4',   rule: 'fp32_no_tensorcore', signal: '4th consecutive fail', outcome: 'RETIRE', cls: 'retired', badge: 'retire' },
+    { round: '5',   rule: 'uncoalesced',        signal: 'load_eff 41.7% (measured)', outcome: 'fires → K-tiled coalesced load', cls: 'active-fire', badge: 'fire' },
+    { round: '6',   rule: 'tensorcore_saturated', signal: 'FFMA path, tc excluded', outcome: 'STOP — 55.5 µs', cls: 'active-fire', badge: 'fire' }
+  ];
+  var rowsOff = [
+    { round: '1–3', rule: 'fp32_no_tensorcore', signal: 'tc=False, occ low', outcome: 'misfire ×3', cls: '' },
+    { round: '4–12', rule: 'fp32_no_tensorcore', signal: 'same misfire repeats', outcome: 'STUCK — never retired', cls: 'retired', badge: 'stuck' },
+    { round: 'end', rule: '(none eligible)', signal: '—', outcome: 'best stays 319.1 µs', cls: '' }
+  ];
+
+  function badgeHtml(b) {
+    if (!b) return '';
+    var text = b === 'retire' ? 'RETIRE' : (b === 'fire' ? 'FIRE' : 'STUCK');
+    return ' <span class="badge ' + b + '">' + text + '</span>';
+  }
+
+  function render(on) {
+    var rows = on ? rowsOn : rowsOff;
+    ruleBody.innerHTML = rows.map(function (r) {
+      return '<tr class="rule-row ' + r.cls + '">' +
+        '<td>' + r.round + '</td>' +
+        '<td><code>' + r.rule + '</code></td>' +
+        '<td>' + r.signal + '</td>' +
+        '<td>' + r.outcome + badgeHtml(r.badge) + '</td>' +
+        '</tr>';
+    }).join('');
+
+    if (on) {
+      stateLabel.textContent = 'ON — rule table updates from measurement';
+      resultLine.className = 'result-line on';
+      resultLine.innerHTML = 'Best latency: <span class="best">55.5 µs</span> — misfire retired at round 4, ' +
+        '<code>uncoalesced</code> fired next (load_eff 41.7% measured), tensor cores excluded (FFMA).';
+    } else {
+      stateLabel.textContent = 'OFF — rule table is static, never updates';
+      resultLine.className = 'result-line off';
+      resultLine.innerHTML = 'Best latency: <span class="best">319.1 µs</span> — the misfiring rule\'s ' +
+        'prescription (TF32) is physically inert on this hand-written kernel; it fires forever because nothing retires it.';
+    }
+  }
+
+  toggle.addEventListener('change', function () { render(toggle.checked); });
+  render(toggle.checked);
+})();
+</script>
+
 </body>
 </html>
