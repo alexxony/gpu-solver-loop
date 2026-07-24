@@ -1,5 +1,7 @@
 # GPU-Solver
 
+![License](https://img.shields.io/badge/license-MIT-blue) ![Python](https://img.shields.io/badge/python-3-blue)
+
 > This README is the methodology narrative. For internals see [`loop/README.md`](loop/README.md).
 
 ## 1. What this is
